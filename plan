@@ -1,0 +1,665 @@
+BLAM! Product Requirements Document
+
+Doc version: 0.1 (Draft)
+Target platforms: Linux + macOS
+Form factor: single Rust executable, no installer, no server
+Tagline: Type fast. Claim first. Keep the crown.
+
+1. Product summary
+
+BLAM! is a LAN-first, local-first, multiplayer word brawler. A group launches the same executable on their laptops, discovers each other on the local network, and plays timed rounds where everyone shares the same rack of 12–20 letters. Players type words as fast as they can. A word only scores once, for the first person to claim it, worth 1 point per letter. Over time BLAM! builds a persistent competitive scene: lifetime stats, leaderboards, and an Elo rating that updates whenever you play with people you’ve connected with.
+
+The “local-first” promise:
+
+Works without internet.
+
+Keeps your stats forever.
+
+When you reconnect to peers, your histories reconcile and converge (CRDT-style), updating rankings and Elo deterministically.
+
+2. The pitch in one breath
+
+“Party word game energy, but in a terminal, on a LAN, with local-first persistence. You can bring it anywhere. The only installation step is ./blam.”
+
+3. Product principles
+3.1 Keyboard is king
+
+BLAM! is a typing game. Every non-essential keypress is a bug. The gameplay loop must be: see letters → type → hit Enter → immediate feedback.
+
+3.2 Instant social gravity
+
+Starting a lobby should feel like clicking a pen: quick, satisfying, inevitable.
+
+Auto-discover peers.
+
+Default settings that “just work.”
+
+A lobby is a room, not a configuration wizard.
+
+3.3 Local-first, not local-only
+
+No account system. No central server. Your “world” is the set of people you’ve ever connected with. When you meet again (same LAN or direct connect), your worlds merge.
+
+3.4 Elegant conflict, not perfect reality
+
+We need deterministic outcomes when devices disagree. The system must always converge to one truth, even if it occasionally contradicts “who really typed first” under network jitter. The rule is: deterministic beats ambiguous.
+
+4. Goals and non-goals
+4.1 Goals (v1)
+
+2–12 players can join and start a round in under 30 seconds on a typical office/home LAN.
+
+Gameplay is smooth at <100 ms perceived latency for claim feedback on a LAN.
+
+After any partition/reconnect, all peers converge to the same:
+
+match record
+
+per-match scores
+
+leaderboards
+
+Elo ratings
+
+Data survives upgrades:
+
+installing a new blam binary does not break history
+
+the on-disk format is versioned and migratable
+
+4.2 Non-goals (v1)
+
+Global internet matchmaking or “worldwide leaderboard.”
+
+Anti-cheat for hostile environments.
+
+Rich GUI. Terminal-first wins in v1.
+
+Multi-language dictionaries.
+
+5. Target users and scenarios
+5.1 Primary scenarios
+
+Office lunch break: 6 coworkers on Wi‑Fi run BLAM!, auto-discover, play 10 rounds.
+
+Cabin / travel with no internet: friends on a local network play anyway.
+
+Recurring group: people play weekly; rankings evolve over time, even if some games happen on different days and later sync.
+
+5.2 Personas
+
+The Instigator: wants to start a game instantly, hates setup.
+
+The Rival: cares about rankings, wants fair and explainable scoring.
+
+The Quiet Grinder: plays solo practice, tracks improvement, cares about streaks and personal bests.
+
+6. Core gameplay specification
+6.1 Round structure
+
+Lobby countdown: 3…2…1… BLAM!
+
+Letters appear (12–20 characters).
+
+Timer runs for T seconds (default 60; configurable).
+
+Players submit words continuously.
+
+At time 0:
+
+input locks
+
+results panel appears
+
+Elo updates (if multiplayer)
+
+6.2 Letters
+
+Random count N ∈ [12, 20], inclusive.
+
+Always contains at least one vowel (A/E/I/O/U).
+
+Duplicates allowed.
+
+Letter distribution should be weighted to English frequency for playability (v1 can start simple, but “weighted” is strongly preferred).
+
+Playability heuristic (recommended):
+
+Ensure at least 2 vowels in practice by rerolling if only 0–1 vowels appear. This still satisfies the hard requirement (≥1 vowel) but avoids dead racks.
+
+6.3 Word validity rules
+
+A submitted word is valid if all are true:
+
+Dictionary word (English wordlist).
+
+Uses only letters from the rack with multiplicity constraints
+Example: rack P O L T allows LOT but not LOOT.
+
+Meets minimum length: ≥3 characters (recommended for fun and to avoid “TO/OF/AN” spam).
+
+Not already claimed by another player this round.
+
+Normalization:
+
+Case-insensitive.
+
+Strip leading/trailing whitespace.
+
+Reject anything with punctuation or spaces in v1.
+
+6.4 Claiming and scoring
+
+A word scores only once per round.
+
+First claimant earns 1 point per letter.
+
+Everyone else gets 0 for that word and sees it marked “claimed”.
+
+6.5 Tie policy
+
+If two claims are “simultaneous” (network edge cases), the system resolves deterministically (details in Section 9). The UI must be honest:
+
+show who won
+
+optionally show “tie-break applied” in the round log if it occurs
+
+7. UX and UI requirements
+7.1 UI form factor
+
+Terminal UI (TUI) using a lightweight Rust TUI framework. Ratatui is a strong fit for building rich TUIs in Rust.
+Use Crossterm as the terminal backend for cross-platform terminal control and input handling.
+
+7.2 First-run experience
+
+First run goals: name yourself, find others, start.
+
+First-run flow:
+
+BLAM! splash (ASCII comic logo).
+
+Prompt: “Pick your handle” (default from $USER if available).
+
+Home screen:
+
+Start Lobby
+
+Join Lobby
+
+Solo Practice
+
+Stats
+
+Settings
+
+No account. No email. No friction.
+
+7.3 Lobby experience
+
+Lobby screen shows:
+
+Lobby name (auto-generated like “LAN-ORBIT”)
+
+Players list with ping indicator (optional)
+
+Settings (host-controlled, visible to all):
+
+Round duration (default 60s)
+
+Letter count mode (default: random 12–20)
+
+Min word length (default: 3)
+
+Big obvious CTA: START ROUND
+
+Join methods:
+
+Auto-discovered lobbies (zero config)
+
+Manual connect: IP:PORT (fallback)
+
+7.4 In-round gameplay screen (single-screen priority)
+
+The in-round layout must keep your eyes where your fingers are:
+
+Top bar:
+
+BLAM! logo left
+
+Letter rack centered (very prominent)
+
+Timer right (huge, legible)
+
+Main:
+
+Input line: > ________ (always focused)
+
+Feedback line under input:
+
+“OK +5” (accepted)
+
+“NOPE (not in dictionary)”
+
+“CLANK (needs another O)”
+
+“TOO LATE (already claimed by Ada)”
+
+Side panels:
+
+Live scoreboard (players sorted by current points)
+
+“Claim feed” showing latest successful claims
+
+7.5 End-of-round summary
+
+Show:
+
+Your words accepted + points
+
+Misses categorized:
+
+invalid dictionary
+
+letter mismatch
+
+already claimed
+
+too short
+
+Final scores
+
+Elo delta (if multiplayer)
+
+7.6 Stats and rankings
+
+Stats home:
+
+Your lifetime:
+
+total rounds played
+
+average score
+
+best score
+
+longest word claimed
+
+most-claimed word (optional)
+
+Rankings:
+
+Elo leaderboard (among known players)
+
+total points leaderboard
+
+“streaks” (optional)
+
+Critical: If syncing new history changes Elo, the UI should explain:
+
+“Synced 14 matches from 3 peers. Ratings updated.”
+
+8. Dictionary and licensing
+8.1 Wordlist choice
+
+Use SCOWL-derived wordlists (spell-checker oriented word lists). The SCOWL ecosystem is commonly used to generate word lists of various sizes and dialects.
+
+Licensing note: the SCOWL repo states it’s derived from BSD-compatible sources and the combined work is freely available under an MIT-like license, with details in its Copyright file.
+Action: lock a specific SCOWL size and dialect for v1 (recommend “American, size ~60”) and bake it into the binary at build time to guarantee consistent validation across peers.
+
+8.2 Performance target
+
+Validation must be fast:
+
+O(length(word)) letter-count check
+
+O(1) average dictionary lookup (hash set / DAWG / minimal perfect hash)
+
+9. Networking and CRDT sync
+
+This is the heart of BLAM!’s “it works anywhere” promise.
+
+9.1 Discovery
+
+Use mDNS-SD to advertise and browse BLAM! peers/lobbies on the LAN. The mdns-sd crate provides Multicast DNS-SD service discovery and supports browsing and registering services.
+
+Service name example:
+
+_blam._tcp.local. with TXT records:
+
+protocol version
+
+lobby name (if hosting)
+
+player handle
+
+actor/device id
+
+Fallback:
+
+Manual join via --connect IP:PORT if mDNS is blocked.
+
+9.2 Ports
+
+Default listen port: choose a high, non-privileged port (e.g. 55333).
+
+If busy, auto-increment until free and display the chosen port.
+
+Allow override: --port.
+
+9.3 Topology (simple, robust)
+
+BLAM! supports two modes:
+
+Live lobby mode (hosted round)
+
+One device is the “Lobby Host” for a session.
+
+Host handles real-time arbitration for claims (fast feedback, one source of truth).
+
+All devices still store events locally.
+
+Background sync mode (peer-to-peer)
+
+Any time peers see each other, they exchange missing history.
+
+No central server required.
+
+Works after partitions and offline play.
+
+9.4 The CRDT model (event log)
+
+We use a deliberately simple CRDT: an append-only event log replicated across peers. Conceptually this is a Grow-only Set of events, where each event is uniquely identified by (actor_id, sequence_number). This is the same “dot” idea used in CRDT literature and supported by Rust CRDT libraries like crdts (which includes GSet, VClock, etc.).
+
+Why event log CRDT?
+
+Merge = union (idempotent, commutative, associative).
+
+Offline-friendly.
+
+Schema evolution friendly.
+
+Derived views (scores, Elo) can be recomputed deterministically.
+
+9.5 Sync protocol (push/pull with vector clocks)
+
+Each device maintains:
+
+actor_id: stable per-device identity
+
+seq: monotonically increasing event counter
+
+vclock: map of actor_id → max seq observed (vector clock)
+
+On peer connection:
+
+Exchange Hello containing vclock.
+
+Each side computes missing events and streams them.
+
+Receiver inserts missing events, updates vclock.
+
+Both sides converge.
+
+This is efficient because we send only what the other side doesn’t have.
+
+9.6 Real-time claim arbitration
+
+To satisfy “first claimant wins” with immediate feedback, v1 uses the lobby host for arbitration:
+
+Client locally pre-validates (dictionary + letter count + min length).
+
+Client sends ClaimAttempt(word) to host.
+
+Host checks:
+
+still in round window
+
+word unclaimed
+
+passes validation (host must re-check to avoid divergence)
+
+Host responds:
+
+ClaimAccepted(word, winner, points)
+
+or ClaimRejected(reason, already_claimed_by=...)
+
+Host emits an append-only WordClaimed event (canonical), replicated via CRDT log.
+
+Partition behavior:
+
+If a client loses host connection mid-round, UI switches to “Disconnected: results may change after resync.”
+
+If host dies, round is aborted (v1), and marked “incomplete” in history.
+
+This is the cleanest way to preserve speed and determinism without dragging in consensus protocols.
+
+9.7 Offline
+
+Offline means:
+
+no internet, or
+
+peers not reachable, or
+
+network partition
+
+BLAM! must still:
+
+let you view stats and leaderboards based on local history
+
+allow Solo Practice
+
+store matches you played on a LAN without internet (still peers) or on a split network
+
+When connectivity returns and peers are discovered/connected, history merges and rankings update.
+
+10. Elo rating system
+10.1 Requirements
+
+Updates after each multiplayer match.
+
+Works for 2–12 players.
+
+Deterministic after history merge. Every peer computes the same ratings from the same event set.
+
+10.2 Recommended Elo method (multiplayer via pairwise comparisons)
+
+At match end, each player gets a score S_p (total points). Convert to pairwise results:
+
+For every pair (A,B):
+
+if S_A > S_B, A gets 1.0, B gets 0.0
+
+if tie, both get 0.5
+
+Expected score uses classic Elo expectation:
+
+E_A = 1 / (1 + 10^((R_B - R_A)/400))
+
+Update:
+
+ΔR_A = (K/(N-1)) * Σ_over_opponents (Result(A,B) - E_A_vs_B)
+
+Choose K default 32 (tunable), optionally lower as games played increases.
+
+10.3 Deterministic replay order
+
+Elo is order-dependent. To ensure convergence after offline merges, we define a canonical match order:
+
+Sort by match_id where match_id is time-sortable (UUIDv7 or ULID recommended).
+
+Recompute ratings by replaying matches in that order.
+
+UX implication:
+
+Elo can change after sync because new historical matches were added. That’s acceptable if it’s clearly communicated.
+
+11. Data storage and upgrade strategy
+11.1 Storage location
+
+Use OS-standard per-user app data directories via the Rust directories crate, which provides platform-specific standard locations for config/cache/data on Linux/macOS (and others).
+
+Examples:
+
+Linux: $XDG_DATA_HOME/blam/ or ~/.local/share/blam/
+
+macOS: ~/Library/Application Support/blam/
+
+11.2 Storage engine
+
+Use SQLite embedded via rusqlite, enabling the bundled feature so SQLite is compiled/linked with the program (avoids dependency on system SQLite versions).
+
+11.3 Schema strategy (designed for upgrades)
+
+Make the event log the stable core.
+
+Tables (conceptual):
+
+meta: schema_version, actor_id, handle, created_at
+
+events: (actor_id BLOB, seq INTEGER, event_type TEXT, payload BLOB, created_at INTEGER)
+Primary key (actor_id, seq)
+
+derived_* tables (optional caches):
+
+can be dropped and rebuilt on startup if schema changes
+
+11.4 Event versioning
+
+Each event payload includes:
+
+payload_version
+
+backward-compatible fields
+
+unknown-field tolerance (so older binaries can ignore new data)
+
+This ensures:
+
+newer BLAM! can read old data and migrate forward
+
+if you downgrade, you might lose access to newer features, but you won’t corrupt the log
+
+11.5 Backup and portability (v1 nice-to-have)
+
+blam export produces a single archive file (sqlite + assets)
+
+blam import merges it as just another peer history source
+
+12. Functional requirements checklist
+12.1 Must-have
+
+LAN discovery (mDNS) + manual connect fallback.
+
+Hosted lobby with real-time claim arbitration
+
+Letter generation 12–20 with ≥1 vowel
+
+Word validation: dictionary + multiplicity check
+
+Scoring: first claim only, 1 pt per letter
+
+Persistent history (matches, scores)
+
+CRDT sync of history across peers using append-only event log principles (vector clocks)
+
+Elo ratings (multiplayer) derived from match history
+
+Upgrade-safe storage format
+
+12.2 Should-have
+
+Solo practice mode (no Elo)
+
+Post-round breakdown of misses and why
+
+Local leaderboard views
+
+Clear “sync happened, rankings updated” messaging
+
+12.3 Could-have (future)
+
+Difficulty presets (more vowels, longer racks)
+
+Daily “seeded rack” mode
+
+Word rarity bonuses (careful, could harm simplicity)
+
+Spectator mode
+
+Cross-LAN direct connect with QR-like join codes (still no central server)
+
+13. Edge cases and policies
+13.1 Duplicate letter racks
+
+Allowed. Fun even. No special handling.
+
+13.2 Host clock skew
+
+Host arbitration avoids most clock issues. Clients still show local timer synced from host “start” signal.
+
+13.3 Late packets
+
+Host accepts claims only while round is active. Late arrivals rejected with “TOO LATE”.
+
+13.4 Network partition mid-round
+
+Mark match incomplete for disconnected players.
+
+On reconnect, sync logs. Incomplete matches do not affect Elo (v1).
+
+13.5 Dictionary disagreements
+
+Avoid entirely by shipping the same baked-in dictionary to all clients in the same binary release. If versions differ, the host’s validation is canonical for that match.
+
+14. Technical stack recommendation (Rust)
+
+TUI: Ratatui
+
+Terminal backend/input: Crossterm
+
+Discovery: mdns-sd (mDNS-SD)
+
+CRDT primitives / vclock concepts: crdts crate (or implement the minimal subset)
+
+Storage: rusqlite with bundled SQLite
+
+App data dirs: directories crate
+
+15. What “great” looks like in practice (quality bar)
+15.1 UX polish
+
+You can start a game without reading help.
+
+The main screen never steals focus from the input line mid-round.
+
+Error feedback is immediate and specific (“needs another O” beats “invalid”).
+
+15.2 Engineering polish
+
+State always converges after reconnect.
+
+No corrupted histories after upgrades.
+
+If something goes wrong, BLAM! fails loudly but safely:
+
+“Couldn’t load database, created backup at …”
+
+16. Next steps (concrete and collaborative)
+
+If we build this in slices, the tight path is:
+
+Core TUI prototype: letters + timer + local word validation + scoring (solo).
+
+Hosted lobby on LAN: discovery + join + synchronized round start.
+
+Claim arbitration: host accept/reject loop with live scoreboard.
+
+Event log + persistence: append-only events in SQLite.
+
+CRDT sync: vector clock exchange + missing event transfer.
+
+Elo + stats: deterministic replay from match history.
+
+Upgrade story: schema versioning + migration + derived-cache rebuild.
