@@ -1,5 +1,6 @@
 //! Game logic: rounds, scoring, letter racks, word validation
 
+pub mod arbitrator;
 pub mod dictionary;
 pub mod validation;
 

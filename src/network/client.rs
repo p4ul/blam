@@ -58,12 +58,19 @@ impl Client {
         Ok(())
     }
 
-    /// Send a claim message to the host
+    /// Send a claim message to the host (legacy, for compatibility)
     pub fn claim(&self, word: &str, points: u32) -> io::Result<()> {
         self.peer.send(Message::Claim {
             player_name: self.player_name.clone(),
             word: word.to_string(),
             points,
+        })
+    }
+
+    /// Send a claim attempt to the host (new arbitration protocol)
+    pub fn send_claim_attempt(&self, word: &str) -> io::Result<()> {
+        self.peer.send(Message::ClaimAttempt {
+            word: word.to_string(),
         })
     }
 

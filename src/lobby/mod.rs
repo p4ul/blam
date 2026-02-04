@@ -5,9 +5,12 @@
 //! - Joining a lobby (client connection)
 //! - Player list management
 //! - Synchronized round start
+//! - Claim arbitration during gameplay
 
+use crate::game::arbitrator::{ClaimResult, RoundArbitrator};
 use crate::network::{
-    Client, DiscoveryEvent, Message, PeerInfo, PeerTracker, Server, ServerEvent, ServiceDiscovery,
+    ClaimRejectReason, Client, DiscoveryEvent, Message, PeerInfo, PeerTracker, Server, ServerEvent,
+    ServiceDiscovery,
 };
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -53,6 +56,21 @@ pub enum LobbyEvent {
     PlayerLeft(String),
     /// The round is starting with these letters
     RoundStart { letters: Vec<char>, duration: u32 },
+    /// A claim was accepted (broadcast to all)
+    ClaimAccepted {
+        word: String,
+        player_name: String,
+        points: u32,
+    },
+    /// A claim was rejected (sent to requester only)
+    ClaimRejected {
+        word: String,
+        reason: ClaimRejectReason,
+    },
+    /// Score update
+    ScoreUpdate { scores: Vec<(String, u32)> },
+    /// Round has ended
+    RoundEnd,
     /// Connection was lost
     Disconnected,
 }
@@ -71,10 +89,16 @@ pub struct HostedLobby {
     players: Vec<Player>,
     /// Mapping from socket address to player index
     addr_to_player: HashMap<SocketAddr, usize>,
+    /// Mapping from player name to socket address (for non-host players)
+    player_to_addr: HashMap<String, SocketAddr>,
     /// Current lobby state
     pub state: LobbyState,
     /// Actor ID for this instance
     actor_id: String,
+    /// Round arbitrator (active during gameplay)
+    arbitrator: Option<RoundArbitrator>,
+    /// Current letters for the round
+    current_letters: Vec<char>,
 }
 
 impl HostedLobby {
@@ -111,8 +135,11 @@ impl HostedLobby {
             discovery,
             players: vec![host_player],
             addr_to_player: HashMap::new(),
+            player_to_addr: HashMap::new(),
             state: LobbyState::Waiting,
             actor_id,
+            arbitrator: None,
+            current_letters: Vec::new(),
         })
     }
 
@@ -152,16 +179,18 @@ impl HostedLobby {
                     if let Some(idx) = self.addr_to_player.remove(&addr) {
                         if idx < self.players.len() {
                             let player = self.players.remove(idx);
+                            self.player_to_addr.remove(&player.name);
                             events.push(LobbyEvent::PlayerLeft(player.name.clone()));
 
                             // Update indices for remaining players
-                            for (a, i) in self.addr_to_player.iter_mut() {
+                            for (_a, i) in self.addr_to_player.iter_mut() {
                                 if *i > idx {
                                     *i -= 1;
                                 }
                             }
                         }
                     } else if let Some(name) = player_name {
+                        self.player_to_addr.remove(&name);
                         events.push(LobbyEvent::PlayerLeft(name));
                     }
                 }
@@ -184,6 +213,7 @@ impl HostedLobby {
                             let idx = self.players.len();
                             self.players.push(player);
                             self.addr_to_player.insert(from, idx);
+                            self.player_to_addr.insert(player_name.clone(), from);
 
                             events.push(LobbyEvent::PlayerJoined(player_name));
                         }
@@ -199,7 +229,21 @@ impl HostedLobby {
                                     }
                                 }
                             }
+                            self.player_to_addr.remove(&player_name);
                             events.push(LobbyEvent::PlayerLeft(player_name));
+                        }
+                        Message::ClaimAttempt { word } => {
+                            // Handle claim attempt from a player
+                            if let Some(idx) = self.addr_to_player.get(&from) {
+                                if let Some(player) = self.players.get(*idx) {
+                                    let player_name = player.name.clone();
+                                    if let Some(claim_events) =
+                                        self.handle_claim_attempt(&word, &player_name, Some(from))
+                                    {
+                                        events.extend(claim_events);
+                                    }
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -210,13 +254,150 @@ impl HostedLobby {
         events
     }
 
+    /// Handle a claim attempt (can be called for host's own claims too)
+    fn handle_claim_attempt(
+        &mut self,
+        word: &str,
+        player_name: &str,
+        requester_addr: Option<SocketAddr>,
+    ) -> Option<Vec<LobbyEvent>> {
+        let arbitrator = self.arbitrator.as_mut()?;
+
+        let result = arbitrator.try_claim(word, player_name);
+
+        match result {
+            ClaimResult::Accepted { points } => {
+                let word_upper = word.to_uppercase();
+
+                // Broadcast ClaimAccepted to all clients
+                let msg = Message::ClaimAccepted {
+                    word: word_upper.clone(),
+                    player_name: player_name.to_string(),
+                    points,
+                };
+                self.server.broadcast(&msg);
+
+                // Also broadcast updated scores
+                let scores = arbitrator.scores();
+                let score_msg = Message::ScoreUpdate { scores: scores.clone() };
+                self.server.broadcast(&score_msg);
+
+                Some(vec![
+                    LobbyEvent::ClaimAccepted {
+                        word: word_upper,
+                        player_name: player_name.to_string(),
+                        points,
+                    },
+                    LobbyEvent::ScoreUpdate { scores },
+                ])
+            }
+            ClaimResult::AlreadyClaimed { by } => {
+                let reason = ClaimRejectReason::AlreadyClaimed { by };
+                self.send_rejection(word, &reason, requester_addr);
+                Some(vec![LobbyEvent::ClaimRejected {
+                    word: word.to_uppercase(),
+                    reason,
+                }])
+            }
+            ClaimResult::TooShort => {
+                let reason = ClaimRejectReason::TooShort;
+                self.send_rejection(word, &reason, requester_addr);
+                Some(vec![LobbyEvent::ClaimRejected {
+                    word: word.to_uppercase(),
+                    reason,
+                }])
+            }
+            ClaimResult::InvalidLetters { missing } => {
+                let reason = ClaimRejectReason::InvalidLetters { missing };
+                self.send_rejection(word, &reason, requester_addr);
+                Some(vec![LobbyEvent::ClaimRejected {
+                    word: word.to_uppercase(),
+                    reason,
+                }])
+            }
+            ClaimResult::NotInDictionary => {
+                let reason = ClaimRejectReason::NotInDictionary;
+                self.send_rejection(word, &reason, requester_addr);
+                Some(vec![LobbyEvent::ClaimRejected {
+                    word: word.to_uppercase(),
+                    reason,
+                }])
+            }
+            ClaimResult::RoundEnded => {
+                let reason = ClaimRejectReason::RoundEnded;
+                self.send_rejection(word, &reason, requester_addr);
+                Some(vec![LobbyEvent::ClaimRejected {
+                    word: word.to_uppercase(),
+                    reason,
+                }])
+            }
+        }
+    }
+
+    /// Send rejection message to a specific client
+    fn send_rejection(
+        &self,
+        word: &str,
+        reason: &ClaimRejectReason,
+        requester_addr: Option<SocketAddr>,
+    ) {
+        if let Some(addr) = requester_addr {
+            let msg = Message::ClaimRejected {
+                word: word.to_uppercase(),
+                reason: reason.clone(),
+            };
+            let _ = self.server.send_to(addr, &msg);
+        }
+    }
+
+    /// Host submits a claim (called from local gameplay)
+    pub fn host_claim(&mut self, word: &str) -> Option<Vec<LobbyEvent>> {
+        self.handle_claim_attempt(word, &self.host_name.clone(), None)
+    }
+
+    /// End the current round
+    pub fn end_round(&mut self) -> Vec<LobbyEvent> {
+        if let Some(arbitrator) = &mut self.arbitrator {
+            arbitrator.end_round();
+        }
+        self.state = LobbyState::Waiting;
+
+        // Broadcast round end to all clients
+        self.server.broadcast(&Message::RoundEnd);
+
+        // Get final scores
+        let scores = self
+            .arbitrator
+            .as_ref()
+            .map(|a| a.scores())
+            .unwrap_or_default();
+
+        vec![
+            LobbyEvent::RoundEnd,
+            LobbyEvent::ScoreUpdate { scores },
+        ]
+    }
+
+    /// Get current scores
+    pub fn scores(&self) -> Vec<(String, u32)> {
+        self.arbitrator
+            .as_ref()
+            .map(|a| a.scores())
+            .unwrap_or_default()
+    }
+
     /// Start the round - broadcast to all players
     pub fn start_round(&mut self, letters: Vec<char>, duration: u32) {
         self.state = LobbyState::Starting;
+        self.current_letters = letters.clone();
+
+        // Create the arbitrator with all player names
+        let player_names: Vec<String> = self.players.iter().map(|p| p.name.clone()).collect();
+        self.arbitrator = Some(RoundArbitrator::new(letters.clone(), &player_names));
 
         // Broadcast round start to all connected clients
         let msg = Message::RoundStart {
-            letters: letters.clone(),
+            letters,
             duration_secs: duration,
         };
         self.server.broadcast(&msg);
@@ -335,11 +516,39 @@ impl JoinedLobby {
                     self.players.retain(|p| p.name != player_name);
                     events.push(LobbyEvent::PlayerLeft(player_name));
                 }
+                Message::ClaimAccepted {
+                    word,
+                    player_name,
+                    points,
+                } => {
+                    events.push(LobbyEvent::ClaimAccepted {
+                        word,
+                        player_name,
+                        points,
+                    });
+                }
+                Message::ClaimRejected { word, reason } => {
+                    events.push(LobbyEvent::ClaimRejected { word, reason });
+                }
+                Message::ScoreUpdate { scores } => {
+                    events.push(LobbyEvent::ScoreUpdate { scores });
+                }
+                Message::RoundEnd => {
+                    self.state = LobbyState::Waiting;
+                    events.push(LobbyEvent::RoundEnd);
+                }
                 _ => {}
             }
         }
 
         events
+    }
+
+    /// Send a claim attempt to the host
+    pub fn send_claim(&self, word: &str) -> Result<(), String> {
+        self.client
+            .send_claim_attempt(word)
+            .map_err(|e| format!("Failed to send claim: {}", e))
     }
 
     /// Leave the lobby

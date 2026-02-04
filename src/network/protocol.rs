@@ -5,6 +5,39 @@
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 
+/// Reason a claim was rejected
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClaimRejectReason {
+    /// Word was already claimed by another player
+    AlreadyClaimed { by: String },
+    /// Word is not in the dictionary
+    NotInDictionary,
+    /// Word uses letters not available in the rack
+    InvalidLetters { missing: Vec<char> },
+    /// Word is too short
+    TooShort,
+    /// Round has ended
+    RoundEnded,
+}
+
+impl ClaimRejectReason {
+    /// Get a user-friendly message for the rejection
+    pub fn message(&self) -> String {
+        match self {
+            ClaimRejectReason::AlreadyClaimed { by } => {
+                format!("Already claimed by {}", by)
+            }
+            ClaimRejectReason::NotInDictionary => "Not in dictionary".to_string(),
+            ClaimRejectReason::InvalidLetters { missing } => {
+                let letters: String = missing.iter().collect();
+                format!("Missing letters: {}", letters)
+            }
+            ClaimRejectReason::TooShort => "Too short (need 3+ letters)".to_string(),
+            ClaimRejectReason::RoundEnded => "Round has ended".to_string(),
+        }
+    }
+}
+
 /// Messages sent between peers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -12,12 +45,27 @@ pub enum Message {
     Join { player_name: String },
     /// Player is leaving
     Leave { player_name: String },
-    /// Word claimed by a player
+    /// Client requests to claim a word (client -> host)
+    ClaimAttempt { word: String },
+    /// Host accepts a claim and broadcasts to all (host -> all)
+    ClaimAccepted {
+        word: String,
+        player_name: String,
+        points: u32,
+    },
+    /// Host rejects a claim (host -> requester only)
+    ClaimRejected {
+        word: String,
+        reason: ClaimRejectReason,
+    },
+    /// Word claimed by a player (broadcast, legacy compatibility)
     Claim { player_name: String, word: String, points: u32 },
     /// Round starting with these letters and duration
     RoundStart { letters: Vec<char>, duration_secs: u32 },
     /// Round has ended
     RoundEnd,
+    /// Scoreboard update (host -> all)
+    ScoreUpdate { scores: Vec<(String, u32)> },
     /// Ping to check connection
     Ping,
     /// Response to ping
@@ -58,6 +106,42 @@ impl Message {
             Message::Leave { player_name } => {
                 format!(r#"{{"type":"leave","player_name":"{}"}}"#, escape_json(player_name))
             }
+            Message::ClaimAttempt { word } => {
+                format!(r#"{{"type":"claim_attempt","word":"{}"}}"#, escape_json(word))
+            }
+            Message::ClaimAccepted { word, player_name, points } => {
+                format!(
+                    r#"{{"type":"claim_accepted","word":"{}","player_name":"{}","points":{}}}"#,
+                    escape_json(word),
+                    escape_json(player_name),
+                    points
+                )
+            }
+            Message::ClaimRejected { word, reason } => {
+                let reason_json = match reason {
+                    ClaimRejectReason::AlreadyClaimed { by } => {
+                        format!(r#"{{"reason":"already_claimed","by":"{}"}}"#, escape_json(by))
+                    }
+                    ClaimRejectReason::NotInDictionary => {
+                        r#"{"reason":"not_in_dictionary"}"#.to_string()
+                    }
+                    ClaimRejectReason::InvalidLetters { missing } => {
+                        let letters_json: String = missing.iter().map(|c| format!(r#""{}""#, c)).collect::<Vec<_>>().join(",");
+                        format!(r#"{{"reason":"invalid_letters","missing":[{}]}}"#, letters_json)
+                    }
+                    ClaimRejectReason::TooShort => {
+                        r#"{"reason":"too_short"}"#.to_string()
+                    }
+                    ClaimRejectReason::RoundEnded => {
+                        r#"{"reason":"round_ended"}"#.to_string()
+                    }
+                };
+                format!(
+                    r#"{{"type":"claim_rejected","word":"{}","reason_data":{}}}"#,
+                    escape_json(word),
+                    reason_json
+                )
+            }
             Message::Claim { player_name, word, points } => {
                 format!(
                     r#"{{"type":"claim","player_name":"{}","word":"{}","points":{}}}"#,
@@ -75,6 +159,14 @@ impl Message {
                 )
             }
             Message::RoundEnd => r#"{"type":"round_end"}"#.to_string(),
+            Message::ScoreUpdate { scores } => {
+                let scores_json: String = scores
+                    .iter()
+                    .map(|(name, score)| format!(r#"["{}",{}]"#, escape_json(name), score))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"score_update","scores":[{}]}}"#, scores_json)
+            }
             Message::Ping => r#"{"type":"ping"}"#.to_string(),
             Message::Pong => r#"{"type":"pong"}"#.to_string(),
         }
@@ -118,6 +210,37 @@ impl Message {
             )
         };
 
+        // Parse scores array [[name, score], ...]
+        let get_scores = || -> Option<Vec<(String, u32)>> {
+            let pattern = r#""scores":[["#;
+            let start = json.find(pattern)?;
+            let rest = &json[start + r#""scores":["#.len()..];
+            let end = rest.find("]]")?;
+            let array = &rest[..end + 1]; // Include last ]
+
+            let mut scores = Vec::new();
+            let mut current = array;
+            while let Some(start) = current.find('[') {
+                let rest = &current[start + 1..];
+                let end = rest.find(']')?;
+                let item = &rest[..end];
+
+                // Parse ["name", score]
+                let comma = item.find(',')?;
+                let name = item[..comma].trim().trim_matches('"');
+                let score_str = item[comma + 1..].trim();
+                let score: u32 = score_str.parse().ok()?;
+                scores.push((unescape_json(name), score));
+
+                if end + 1 < rest.len() {
+                    current = &rest[end + 1..];
+                } else {
+                    break;
+                }
+            }
+            Some(scores)
+        };
+
         // Get type field
         let msg_type = get_str("type")
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing type field"))?;
@@ -132,6 +255,46 @@ impl Message {
                 let player_name = get_str("player_name")
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing player_name"))?;
                 Ok(Message::Leave { player_name })
+            }
+            "claim_attempt" => {
+                let word = get_str("word")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing word"))?;
+                Ok(Message::ClaimAttempt { word })
+            }
+            "claim_accepted" => {
+                let word = get_str("word")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing word"))?;
+                let player_name = get_str("player_name")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing player_name"))?;
+                let points = get_u32("points")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing points"))?;
+                Ok(Message::ClaimAccepted { word, player_name, points })
+            }
+            "claim_rejected" => {
+                let word = get_str("word")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing word"))?;
+
+                // Parse the reason from reason_data
+                let reason_str = get_str("reason")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing reason"))?;
+
+                let reason = match reason_str.as_str() {
+                    "already_claimed" => {
+                        let by = get_str("by")
+                            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing by"))?;
+                        ClaimRejectReason::AlreadyClaimed { by }
+                    }
+                    "not_in_dictionary" => ClaimRejectReason::NotInDictionary,
+                    "invalid_letters" => {
+                        let missing = get_chars("missing").unwrap_or_default();
+                        ClaimRejectReason::InvalidLetters { missing }
+                    }
+                    "too_short" => ClaimRejectReason::TooShort,
+                    "round_ended" => ClaimRejectReason::RoundEnded,
+                    _ => return Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown reason: {}", reason_str))),
+                };
+
+                Ok(Message::ClaimRejected { word, reason })
             }
             "claim" => {
                 let player_name = get_str("player_name")
@@ -150,6 +313,11 @@ impl Message {
                 Ok(Message::RoundStart { letters, duration_secs })
             }
             "round_end" => Ok(Message::RoundEnd),
+            "score_update" => {
+                let scores = get_scores()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing or invalid scores"))?;
+                Ok(Message::ScoreUpdate { scores })
+            }
             "ping" => Ok(Message::Ping),
             "pong" => Ok(Message::Pong),
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown message type: {}", msg_type))),
@@ -289,5 +457,89 @@ mod tests {
         let bytes = msg.to_bytes();
         let (parsed, _) = Message::from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn test_claim_attempt_roundtrip() {
+        let msg = Message::ClaimAttempt { word: "BLAM".to_string() };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_accepted_roundtrip() {
+        let msg = Message::ClaimAccepted {
+            word: "BLAM".to_string(),
+            player_name: "Alice".to_string(),
+            points: 4,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_rejected_already_claimed() {
+        let msg = Message::ClaimRejected {
+            word: "BLAM".to_string(),
+            reason: ClaimRejectReason::AlreadyClaimed { by: "Bob".to_string() },
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_rejected_invalid_letters() {
+        let msg = Message::ClaimRejected {
+            word: "TEST".to_string(),
+            reason: ClaimRejectReason::InvalidLetters { missing: vec!['X', 'Y'] },
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_score_update_roundtrip() {
+        let msg = Message::ScoreUpdate {
+            scores: vec![
+                ("Alice".to_string(), 15),
+                ("Bob".to_string(), 12),
+            ],
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_reject_reason_messages() {
+        assert_eq!(
+            ClaimRejectReason::AlreadyClaimed { by: "Alice".to_string() }.message(),
+            "Already claimed by Alice"
+        );
+        assert_eq!(
+            ClaimRejectReason::NotInDictionary.message(),
+            "Not in dictionary"
+        );
+        assert_eq!(
+            ClaimRejectReason::InvalidLetters { missing: vec!['X', 'Y'] }.message(),
+            "Missing letters: XY"
+        );
+        assert_eq!(
+            ClaimRejectReason::TooShort.message(),
+            "Too short (need 3+ letters)"
+        );
+        assert_eq!(
+            ClaimRejectReason::RoundEnded.message(),
+            "Round has ended"
+        );
     }
 }

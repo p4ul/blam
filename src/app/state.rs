@@ -25,6 +25,7 @@ pub enum MissReason {
     TooShort,
     InvalidLetters,
     NotInDictionary,
+    AlreadyClaimed { by: String },
 }
 
 impl MissReason {
@@ -33,6 +34,7 @@ impl MissReason {
             MissReason::TooShort => "Too Short",
             MissReason::InvalidLetters => "Invalid Letters",
             MissReason::NotInDictionary => "Not In Dictionary",
+            MissReason::AlreadyClaimed { .. } => "Already Claimed",
         }
     }
 }
@@ -48,6 +50,22 @@ pub struct RoundSummary {
     pub too_short: Vec<String>,
     pub invalid_letters: Vec<String>,
     pub not_in_dictionary: Vec<String>,
+    pub already_claimed: Vec<String>,
+}
+
+/// A claim in the feed (visible to all players)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimFeedEntry {
+    pub player_name: String,
+    pub word: String,
+    pub points: u32,
+}
+
+/// Player score in multiplayer
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerScore {
+    pub name: String,
+    pub score: u32,
 }
 
 impl RoundSummary {
@@ -78,10 +96,18 @@ pub struct App {
     pub time_remaining: u32,
     /// Whether the round has ended (timer hit 0)
     pub round_ended: bool,
-    /// Words claimed this round
+    /// Words claimed this round (by the local player)
     claimed_words: Vec<ClaimedWord>,
     /// Missed submissions this round
     missed_words: Vec<MissedWord>,
+    /// Multiplayer scoreboard (all players)
+    pub scoreboard: Vec<PlayerScore>,
+    /// Recent claims feed (all players)
+    pub claim_feed: Vec<ClaimFeedEntry>,
+    /// Maximum entries in claim feed
+    claim_feed_max: usize,
+    /// Local player name (for multiplayer)
+    pub player_name: Option<String>,
 }
 
 impl Default for App {
@@ -96,6 +122,10 @@ impl Default for App {
             round_ended: false,
             claimed_words: Vec::new(),
             missed_words: Vec::new(),
+            scoreboard: Vec::new(),
+            claim_feed: Vec::new(),
+            claim_feed_max: 10,
+            player_name: None,
         }
     }
 }
@@ -214,6 +244,97 @@ impl App {
         self.round_ended = false;
         self.claimed_words.clear();
         self.missed_words.clear();
+        self.claim_feed.clear();
+        // Reset scoreboard scores but keep players
+        for player in &mut self.scoreboard {
+            player.score = 0;
+        }
+    }
+
+    /// Set the local player name (for multiplayer)
+    pub fn set_player_name(&mut self, name: String) {
+        self.player_name = Some(name);
+    }
+
+    /// Initialize scoreboard with players
+    pub fn set_scoreboard(&mut self, players: Vec<String>) {
+        self.scoreboard = players
+            .into_iter()
+            .map(|name| PlayerScore { name, score: 0 })
+            .collect();
+    }
+
+    /// Update scoreboard from score update message
+    pub fn update_scoreboard(&mut self, scores: Vec<(String, u32)>) {
+        for (name, score) in scores {
+            if let Some(player) = self.scoreboard.iter_mut().find(|p| p.name == name) {
+                player.score = score;
+            } else {
+                self.scoreboard.push(PlayerScore { name, score });
+            }
+        }
+        // Sort by score descending
+        self.scoreboard.sort_by(|a, b| b.score.cmp(&a.score));
+    }
+
+    /// Handle a claim accepted from the host (multiplayer)
+    pub fn on_claim_accepted(&mut self, word: String, player_name: String, points: u32) {
+        // Add to claim feed
+        self.claim_feed.push(ClaimFeedEntry {
+            player_name: player_name.clone(),
+            word: word.clone(),
+            points,
+        });
+        // Trim feed if too long
+        while self.claim_feed.len() > self.claim_feed_max {
+            self.claim_feed.remove(0);
+        }
+
+        // If it's our claim, update our state
+        if self.player_name.as_ref() == Some(&player_name) {
+            self.score += points;
+            self.feedback = format!("OK +{} ({})", points, word);
+            self.claimed_words.push(ClaimedWord {
+                word,
+                points,
+            });
+        }
+
+        // Update scoreboard
+        if let Some(player) = self.scoreboard.iter_mut().find(|p| p.name == player_name) {
+            player.score += points;
+        }
+        // Re-sort scoreboard
+        self.scoreboard.sort_by(|a, b| b.score.cmp(&a.score));
+    }
+
+    /// Handle a claim rejected from the host (multiplayer)
+    pub fn on_claim_rejected(&mut self, word: String, reason: MissReason) {
+        let word_upper = word.to_uppercase();
+        self.feedback = match &reason {
+            MissReason::TooShort => "Too short (need 3+ letters)".to_string(),
+            MissReason::InvalidLetters => "Missing required letters".to_string(),
+            MissReason::NotInDictionary => "Not in dictionary".to_string(),
+            MissReason::AlreadyClaimed { by } => format!("Already claimed by {}", by),
+        };
+        self.missed_words.push(MissedWord {
+            word: word_upper,
+            reason,
+        });
+    }
+
+    /// Get current input for sending to host (multiplayer)
+    pub fn get_pending_claim(&self) -> Option<String> {
+        if self.input.is_empty() || self.round_ended {
+            None
+        } else {
+            Some(self.input.clone())
+        }
+    }
+
+    /// Clear input after sending claim attempt (multiplayer)
+    pub fn clear_input(&mut self) {
+        self.input.clear();
     }
 
     /// Get the list of claimed words this round
@@ -235,10 +356,11 @@ impl App {
         };
 
         for miss in &self.missed_words {
-            match miss.reason {
+            match &miss.reason {
                 MissReason::TooShort => summary.too_short.push(miss.word.clone()),
                 MissReason::InvalidLetters => summary.invalid_letters.push(miss.word.clone()),
                 MissReason::NotInDictionary => summary.not_in_dictionary.push(miss.word.clone()),
+                MissReason::AlreadyClaimed { .. } => summary.already_claimed.push(miss.word.clone()),
             }
         }
 
