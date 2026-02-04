@@ -14,9 +14,14 @@ BLAM! is a LAN-first, local-first, multiplayer word brawler. Players share the s
 
 ## Building
 
-Requires Rust 1.88 or later.
+Requires Rust 1.88 or later (1.93+ recommended). Use [rustup](https://rustup.rs/) to manage your Rust installation.
 
 ```bash
+# Using make (recommended - ensures correct toolchain)
+make release
+./target/release/blam
+
+# Or using cargo directly (requires rustup in PATH)
 cargo build --release
 ./target/release/blam
 ```
