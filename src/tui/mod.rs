@@ -4,4 +4,4 @@ mod terminal;
 mod ui;
 
 pub use terminal::Tui;
-pub use ui::render;
+pub use ui::{render, render_app};

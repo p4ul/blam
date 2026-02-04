@@ -1,26 +1,323 @@
 //! UI rendering using ratatui
 //!
-//! Layout:
-//! ┌─────────────────────────────────────┐
-//! │  BLAM!    [A B C D E F G H]   0:45  │ <- Header: logo, letters, timer
-//! ├─────────────────────────────────────┤
-//! │                                     │
-//! │  > ________                         │ <- Input line (always focused)
-//! │                                     │
-//! │  OK +5                              │ <- Feedback line
-//! │                                     │
-//! │  Score: 42                          │ <- Score display
-//! │                                     │
-//! └─────────────────────────────────────┘
+//! Supports multiple screens:
+//! - Menu: Main menu with options
+//! - Browser: Lobby browser showing available games
+//! - HostLobby: Hosting a lobby, waiting for players
+//! - JoinedLobby: Joined a lobby, waiting for start
+//! - Playing: In-game screen
+//! - Error: Error message display
 
-use crate::app::App;
+use crate::app::{App, AppCoordinator, MenuOption, Screen};
+use crate::lobby::Player;
+use crate::network::PeerInfo;
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, List, ListItem, Paragraph},
 };
 
-/// Render the game UI
-pub fn render(frame: &mut Frame, app: &App) {
+/// Render the appropriate screen based on app state
+pub fn render(frame: &mut Frame, coordinator: &AppCoordinator) {
+    match &coordinator.screen {
+        Screen::Menu { selected, handle, handle_input, editing_handle } => {
+            render_menu(frame, *selected, handle, handle_input, *editing_handle);
+        }
+        Screen::Browser { lobbies, selected, .. } => {
+            render_browser(frame, lobbies, *selected);
+        }
+        Screen::HostLobby { lobby, countdown } => {
+            render_host_lobby(frame, &lobby.lobby_name, lobby.players(), lobby.port(), lobby.can_start(), *countdown);
+        }
+        Screen::JoinedLobby { lobby } => {
+            render_joined_lobby(frame, &lobby.lobby_name, &lobby.host_name, lobby.players());
+        }
+        Screen::Playing { app, .. } => {
+            render_game(frame, app);
+        }
+        Screen::Error { message } => {
+            render_error(frame, message);
+        }
+    }
+}
+
+/// Render the main menu
+fn render_menu(frame: &mut Frame, selected: usize, handle: &str, handle_input: &str, editing_handle: bool) {
+    let area = frame.area();
+
+    // Main layout
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(8),  // Logo
+            Constraint::Length(3),  // Handle input
+            Constraint::Length(1),  // Spacer
+            Constraint::Min(6),     // Menu options
+            Constraint::Length(2),  // Footer
+        ])
+        .margin(2)
+        .split(area);
+
+    // Logo
+    let logo = r#"
+ ____  _        _    __  __ _
+| __ )| |      / \  |  \/  | |
+|  _ \| |     / _ \ | |\/| | |
+| |_) | |___ / ___ \| |  | |_|
+|____/|_____/_/   \_\_|  |_(_)
+"#;
+    let logo_widget = Paragraph::new(logo)
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center);
+    frame.render_widget(logo_widget, layout[0]);
+
+    // Handle input
+    let handle_display = if editing_handle {
+        format!("Handle: [{}]_", handle_input)
+    } else {
+        format!("Handle: {} (Tab to edit)", handle)
+    };
+    let handle_style = if editing_handle {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let handle_widget = Paragraph::new(handle_display)
+        .style(handle_style)
+        .alignment(Alignment::Center);
+    frame.render_widget(handle_widget, layout[1]);
+
+    // Menu options
+    let items: Vec<ListItem> = MenuOption::all()
+        .iter()
+        .enumerate()
+        .map(|(i, opt)| {
+            let style = if i == selected {
+                Style::default().fg(Color::Yellow).bold()
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if i == selected { "> " } else { "  " };
+            ListItem::new(format!("{}{}", prefix, opt.label())).style(style)
+        })
+        .collect();
+
+    let menu = List::new(items)
+        .block(Block::default())
+        .highlight_style(Style::default().fg(Color::Yellow));
+    frame.render_widget(menu, layout[3]);
+
+    // Footer
+    let footer = Paragraph::new("↑↓ Navigate  Enter Select  Esc Quit")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[4]);
+}
+
+/// Render the lobby browser
+fn render_browser(frame: &mut Frame, lobbies: &[PeerInfo], selected: usize) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Min(6),     // Lobby list
+            Constraint::Length(2),  // Footer
+        ])
+        .margin(1)
+        .split(area);
+
+    // Header
+    let header = Paragraph::new("Available Lobbies")
+        .style(Style::default().fg(Color::Cyan).bold())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(header, layout[0]);
+
+    // Lobby list
+    if lobbies.is_empty() {
+        let searching = Paragraph::new("Searching for lobbies on LAN...\n\n(Make sure another player has started a lobby)")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(searching, layout[1]);
+    } else {
+        let items: Vec<ListItem> = lobbies
+            .iter()
+            .enumerate()
+            .map(|(i, peer)| {
+                let style = if i == selected {
+                    Style::default().fg(Color::Yellow).bold()
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                let prefix = if i == selected { "> " } else { "  " };
+                let lobby_name = peer.lobby_name.as_deref().unwrap_or("Unknown");
+                ListItem::new(format!("{}{} (Host: {})", prefix, lobby_name, peer.handle))
+                    .style(style)
+            })
+            .collect();
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).title("Lobbies"));
+        frame.render_widget(list, layout[1]);
+    }
+
+    // Footer
+    let footer = Paragraph::new("↑↓ Select  Enter Join  Esc Back")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[2]);
+}
+
+/// Render the host lobby screen
+fn render_host_lobby(
+    frame: &mut Frame,
+    lobby_name: &str,
+    players: &[Player],
+    port: u16,
+    can_start: bool,
+    countdown: Option<u32>,
+) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(3),  // Lobby info
+            Constraint::Min(6),     // Player list
+            Constraint::Length(3),  // Start button
+            Constraint::Length(2),  // Footer
+        ])
+        .margin(1)
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(format!("Lobby: {}", lobby_name))
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(header, layout[0]);
+
+    // Lobby info
+    let info = Paragraph::new(format!("Port: {} | Players: {}/12", port, players.len()))
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(info, layout[1]);
+
+    // Player list
+    let items: Vec<ListItem> = players
+        .iter()
+        .map(|p| {
+            let suffix = if p.is_host { " (Host)" } else { "" };
+            let style = if p.is_local {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {} {}{}", "●", p.name, suffix)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Players"));
+    frame.render_widget(list, layout[2]);
+
+    // Start button or countdown
+    let start_text = if let Some(count) = countdown {
+        format!("Starting in {}...", count)
+    } else if can_start {
+        "[ Press ENTER to START ]".to_string()
+    } else {
+        "Waiting for players (need at least 2)".to_string()
+    };
+
+    let start_style = if can_start && countdown.is_none() {
+        Style::default().fg(Color::Green).bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+
+    let start = Paragraph::new(start_text)
+        .style(start_style)
+        .alignment(Alignment::Center);
+    frame.render_widget(start, layout[3]);
+
+    // Footer
+    let footer = Paragraph::new("Enter Start  Esc Cancel")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[4]);
+}
+
+/// Render the joined lobby screen
+fn render_joined_lobby(frame: &mut Frame, lobby_name: &str, host_name: &str, players: &[Player]) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(3),  // Lobby info
+            Constraint::Min(6),     // Player list
+            Constraint::Length(3),  // Status
+            Constraint::Length(2),  // Footer
+        ])
+        .margin(1)
+        .split(area);
+
+    // Header
+    let header = Paragraph::new(format!("Lobby: {}", lobby_name))
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(header, layout[0]);
+
+    // Lobby info
+    let info = Paragraph::new(format!("Host: {} | Players: {}/12", host_name, players.len()))
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(info, layout[1]);
+
+    // Player list
+    let items: Vec<ListItem> = players
+        .iter()
+        .map(|p| {
+            let suffix = if p.is_host {
+                " (Host)"
+            } else if p.is_local {
+                " (You)"
+            } else {
+                ""
+            };
+            let style = if p.is_local {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("  {} {}{}", "●", p.name, suffix)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title("Players"));
+    frame.render_widget(list, layout[2]);
+
+    // Status
+    let status = Paragraph::new("Waiting for host to start...")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(status, layout[3]);
+
+    // Footer
+    let footer = Paragraph::new("Esc Leave")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[4]);
+}
+
+/// Render the in-game screen
+fn render_game(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     // Main layout: header (3 lines) + content
@@ -39,6 +336,32 @@ pub fn render(frame: &mut Frame, app: &App) {
     } else {
         render_main(frame, layout[1], app);
     }
+}
+
+/// Render error screen
+fn render_error(frame: &mut Frame, message: &str) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),
+            Constraint::Length(3),
+            Constraint::Length(2),
+            Constraint::Percentage(40),
+        ])
+        .margin(2)
+        .split(area);
+
+    let error = Paragraph::new(format!("Error: {}", message))
+        .style(Style::default().fg(Color::Red))
+        .alignment(Alignment::Center);
+    frame.render_widget(error, layout[1]);
+
+    let hint = Paragraph::new("Press Esc to go back")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(hint, layout[2]);
 }
 
 /// Render the header: logo, letter rack, timer
@@ -152,7 +475,7 @@ fn render_end_of_round(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(score, main_layout[2]);
 
     // Instructions
-    let instructions = Paragraph::new("Press ESC to quit")
+    let instructions = Paragraph::new("Press ESC to return to menu")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(instructions, main_layout[4]);
@@ -197,4 +520,9 @@ fn format_feedback(feedback: &str) -> (String, Color) {
     };
 
     (feedback.to_string(), color)
+}
+
+// Legacy function for backwards compatibility
+pub fn render_app(frame: &mut Frame, app: &App) {
+    render_game(frame, app);
 }

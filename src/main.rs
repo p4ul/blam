@@ -4,12 +4,14 @@
 
 mod app;
 mod game;
+mod lobby;
 mod network;
 mod storage;
 mod tui;
 
-use app::{App, DEFAULT_ROUND_DURATION};
+use app::{AppCoordinator, Screen, DEFAULT_ROUND_DURATION};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use game::LetterRack;
 use std::io;
 use std::time::{Duration, Instant};
 use tui::Tui;
@@ -19,20 +21,17 @@ fn main() -> io::Result<()> {
     let mut terminal = Tui::new()?;
     terminal.enter()?;
 
-    // Initialize app with demo letters
-    let mut app = App::new();
-    app.start_round(
-        vec!['B', 'L', 'A', 'M', 'T', 'Y', 'P', 'E', 'R', 'S', 'O', 'N'],
-        DEFAULT_ROUND_DURATION,
-    );
+    // Initialize app coordinator
+    let mut coordinator = AppCoordinator::new();
 
     // Main event loop
-    let tick_rate = Duration::from_secs(1);
+    let tick_rate = Duration::from_millis(100); // Faster for responsive UI
     let mut last_tick = Instant::now();
+    let mut last_second = Instant::now();
 
     loop {
         // Render
-        terminal.draw(|frame| tui::render(frame, &app))?;
+        terminal.draw(|frame| tui::render(frame, &coordinator))?;
 
         // Calculate timeout for next tick
         let timeout = tick_rate
@@ -44,40 +43,120 @@ fn main() -> io::Result<()> {
             if let Event::Key(key) = event::read()? {
                 // Only handle key press events (not release)
                 if key.kind == KeyEventKind::Press {
-                    match key.code {
-                        KeyCode::Esc => {
-                            app.quit();
-                        }
-                        KeyCode::Enter => {
-                            app.on_submit();
-                        }
-                        KeyCode::Backspace => {
-                            app.on_backspace();
-                        }
-                        KeyCode::Char(c) => {
-                            // Only accept alphabetic characters
-                            if c.is_ascii_alphabetic() {
-                                app.on_char(c.to_ascii_uppercase());
-                            }
-                        }
-                        _ => {}
-                    }
+                    handle_key(&mut coordinator, key.code);
                 }
             }
         }
 
-        // Handle timer tick
+        // Handle updates
         if last_tick.elapsed() >= tick_rate {
-            app.tick();
+            coordinator.poll();
             last_tick = Instant::now();
         }
 
+        // Handle second-based timer for game play
+        if last_second.elapsed() >= Duration::from_secs(1) {
+            if let Screen::Playing { app, .. } = &mut coordinator.screen {
+                app.tick();
+            }
+            last_second = Instant::now();
+        }
+
         // Check for quit
-        if app.should_quit {
+        if coordinator.should_quit {
             break;
         }
     }
 
     // Terminal cleanup happens automatically via Tui::drop
     Ok(())
+}
+
+fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
+    match &mut coordinator.screen {
+        Screen::Menu { editing_handle, .. } => {
+            if *editing_handle {
+                // Handle editing mode
+                match code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Tab => coordinator.menu_tab(),
+                    KeyCode::Backspace => coordinator.menu_backspace(),
+                    KeyCode::Char(c) if c.is_ascii_alphanumeric() || c == '_' => {
+                        coordinator.menu_char(c)
+                    }
+                    _ => {}
+                }
+            } else {
+                // Handle navigation mode
+                match code {
+                    KeyCode::Esc => coordinator.quit(),
+                    KeyCode::Up => coordinator.menu_up(),
+                    KeyCode::Down => coordinator.menu_down(),
+                    KeyCode::Enter => coordinator.menu_select(),
+                    KeyCode::Tab => coordinator.menu_tab(),
+                    _ => {}
+                }
+            }
+        }
+        Screen::Browser { .. } => match code {
+            KeyCode::Esc => coordinator.go_to_menu(),
+            KeyCode::Up => coordinator.browser_up(),
+            KeyCode::Down => coordinator.browser_down(),
+            KeyCode::Enter => coordinator.browser_select(),
+            _ => {}
+        },
+        Screen::HostLobby { lobby, .. } => match code {
+            KeyCode::Esc => {
+                // TODO: Clean shutdown of lobby
+                coordinator.go_to_menu();
+            }
+            KeyCode::Enter => {
+                if lobby.can_start() {
+                    // Generate letters and start round
+                    let letters = LetterRack::generate().letters().to_vec();
+                    lobby.start_round(letters.clone(), DEFAULT_ROUND_DURATION);
+
+                    // Transition to playing
+                    let mut app = app::App::new();
+                    app.start_round(letters, DEFAULT_ROUND_DURATION);
+                    coordinator.screen = Screen::Playing {
+                        app,
+                        is_host: true,
+                        hosted_lobby: None, // TODO: keep lobby alive for results
+                    };
+                }
+            }
+            _ => {}
+        },
+        Screen::JoinedLobby { .. } => match code {
+            KeyCode::Esc => {
+                // Leave the lobby
+                coordinator.go_to_menu();
+            }
+            _ => {}
+        },
+        Screen::Playing { app, .. } => match code {
+            KeyCode::Esc => {
+                if app.is_round_over() {
+                    coordinator.go_to_menu();
+                }
+            }
+            KeyCode::Enter => {
+                app.on_submit();
+            }
+            KeyCode::Backspace => {
+                app.on_backspace();
+            }
+            KeyCode::Char(c) => {
+                if c.is_ascii_alphabetic() {
+                    app.on_char(c.to_ascii_uppercase());
+                }
+            }
+            _ => {}
+        },
+        Screen::Error { .. } => match code {
+            KeyCode::Esc => coordinator.go_to_menu(),
+            KeyCode::Enter => coordinator.go_to_menu(),
+            _ => {}
+        },
+    }
 }
