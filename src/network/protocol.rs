@@ -22,6 +22,17 @@ pub enum Message {
     Ping,
     /// Response to ping
     Pong,
+    /// Lobby settings update (host -> clients)
+    LobbySettings {
+        duration_secs: u32,
+        min_word_length: u8,
+        min_letters: u8,
+        max_letters: u8,
+    },
+    /// Full player list (host -> clients)
+    PlayerList { players: Vec<String>, host: String },
+    /// Chat message (for future use)
+    Chat { player_name: String, message: String },
 }
 
 impl Message {
@@ -77,6 +88,31 @@ impl Message {
             Message::RoundEnd => r#"{"type":"round_end"}"#.to_string(),
             Message::Ping => r#"{"type":"ping"}"#.to_string(),
             Message::Pong => r#"{"type":"pong"}"#.to_string(),
+            Message::LobbySettings { duration_secs, min_word_length, min_letters, max_letters } => {
+                format!(
+                    r#"{{"type":"lobby_settings","duration_secs":{},"min_word_length":{},"min_letters":{},"max_letters":{}}}"#,
+                    duration_secs, min_word_length, min_letters, max_letters
+                )
+            }
+            Message::PlayerList { players, host } => {
+                let players_json: String = players
+                    .iter()
+                    .map(|p| format!(r#""{}""#, escape_json(p)))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    r#"{{"type":"player_list","players":[{}],"host":"{}"}}"#,
+                    players_json,
+                    escape_json(host)
+                )
+            }
+            Message::Chat { player_name, message } => {
+                format!(
+                    r#"{{"type":"chat","player_name":"{}","message":"{}"}}"#,
+                    escape_json(player_name),
+                    escape_json(message)
+                )
+            }
         }
     }
 
@@ -118,6 +154,26 @@ impl Message {
             )
         };
 
+        let get_string_array = |key: &str| -> Option<Vec<String>> {
+            let pattern = format!(r#""{}":["#, key);
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = &json[start..];
+            let end = rest.find(']')?;
+            let array = &rest[..end];
+            if array.trim().is_empty() {
+                return Some(Vec::new());
+            }
+            Some(
+                array
+                    .split(',')
+                    .map(|s| {
+                        let s = s.trim().trim_matches('"');
+                        unescape_json(s)
+                    })
+                    .collect()
+            )
+        };
+
         // Get type field
         let msg_type = get_str("type")
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing type field"))?;
@@ -152,6 +208,36 @@ impl Message {
             "round_end" => Ok(Message::RoundEnd),
             "ping" => Ok(Message::Ping),
             "pong" => Ok(Message::Pong),
+            "lobby_settings" => {
+                let duration_secs = get_u32("duration_secs")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing duration_secs"))?;
+                let min_word_length = get_u32("min_word_length")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing min_word_length"))? as u8;
+                let min_letters = get_u32("min_letters")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing min_letters"))? as u8;
+                let max_letters = get_u32("max_letters")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing max_letters"))? as u8;
+                Ok(Message::LobbySettings {
+                    duration_secs,
+                    min_word_length,
+                    min_letters,
+                    max_letters,
+                })
+            }
+            "player_list" => {
+                let players = get_string_array("players")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing players"))?;
+                let host = get_str("host")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing host"))?;
+                Ok(Message::PlayerList { players, host })
+            }
+            "chat" => {
+                let player_name = get_str("player_name")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing player_name"))?;
+                let message = get_str("message")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing message"))?;
+                Ok(Message::Chat { player_name, message })
+            }
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown message type: {}", msg_type))),
         }
     }
@@ -289,5 +375,55 @@ mod tests {
         let bytes = msg.to_bytes();
         let (parsed, _) = Message::from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn test_lobby_settings_roundtrip() {
+        let msg = Message::LobbySettings {
+            duration_secs: 90,
+            min_word_length: 4,
+            min_letters: 15,
+            max_letters: 25,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_player_list_roundtrip() {
+        let msg = Message::PlayerList {
+            players: vec!["Alice".to_string(), "Bob".to_string(), "Charlie".to_string()],
+            host: "Alice".to_string(),
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_player_list_empty() {
+        let msg = Message::PlayerList {
+            players: vec![],
+            host: "Host".to_string(),
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_chat_roundtrip() {
+        let msg = Message::Chat {
+            player_name: "Alice".to_string(),
+            message: "Hello, world!".to_string(),
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
     }
 }

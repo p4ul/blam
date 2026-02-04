@@ -13,7 +13,8 @@
 //! │                                     │
 //! └─────────────────────────────────────┘
 
-use crate::app::App;
+use crate::app::{App, AppMode};
+use crate::tui::render_lobby;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Paragraph},
@@ -21,6 +22,14 @@ use ratatui::{
 
 /// Render the game UI
 pub fn render(frame: &mut Frame, app: &App) {
+    // Check if we're in lobby mode
+    if app.mode == AppMode::Lobby {
+        if let Some(lobby) = &app.lobby {
+            render_lobby(frame, lobby);
+            return;
+        }
+    }
+
     let area = frame.area();
 
     // Main layout: header (3 lines) + content

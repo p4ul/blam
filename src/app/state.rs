@@ -1,9 +1,19 @@
 //! Application state management
 
 use crate::game::validation::{validate_word, ValidationResult};
+use crate::lobby::Lobby;
 
 /// Default round duration in seconds
 pub const DEFAULT_ROUND_DURATION: u32 = 60;
+
+/// Current application mode
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppMode {
+    /// In the lobby, waiting for game to start
+    Lobby,
+    /// Active game round
+    Game,
+}
 
 /// A claimed word with its point value
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +76,10 @@ impl RoundSummary {
 pub struct App {
     /// Whether the application should quit
     pub should_quit: bool,
+    /// Current application mode
+    pub mode: AppMode,
+    /// Current lobby (if in lobby mode)
+    pub lobby: Option<Lobby>,
     /// Current letter rack
     pub letters: Vec<char>,
     /// Current user input
@@ -88,6 +102,8 @@ impl Default for App {
     fn default() -> Self {
         Self {
             should_quit: false,
+            mode: AppMode::Game,
+            lobby: None,
             letters: Vec::new(),
             input: String::new(),
             feedback: String::new(),
@@ -243,6 +259,81 @@ impl App {
         }
 
         summary
+    }
+
+    // === Lobby Management ===
+
+    /// Create a new lobby and enter lobby mode
+    pub fn create_lobby(&mut self, player_name: String) {
+        self.lobby = Some(Lobby::create(player_name));
+        self.mode = AppMode::Lobby;
+    }
+
+    /// Join an existing lobby
+    pub fn join_lobby(&mut self, lobby_name: String, player_name: String) {
+        self.lobby = Some(Lobby::join(lobby_name, player_name));
+        self.mode = AppMode::Lobby;
+    }
+
+    /// Leave the current lobby
+    pub fn leave_lobby(&mut self) {
+        self.lobby = None;
+        self.mode = AppMode::Game;
+    }
+
+    /// Check if we're in lobby mode
+    pub fn is_in_lobby(&self) -> bool {
+        self.mode == AppMode::Lobby && self.lobby.is_some()
+    }
+
+    /// Check if we're the host of the current lobby
+    pub fn is_lobby_host(&self) -> bool {
+        self.lobby.as_ref().map(|l| l.is_host).unwrap_or(false)
+    }
+
+    /// Add a player to the lobby (host receives this from network)
+    pub fn lobby_add_player(&mut self, name: String) {
+        if let Some(lobby) = &mut self.lobby {
+            lobby.add_player(name);
+        }
+    }
+
+    /// Remove a player from the lobby
+    pub fn lobby_remove_player(&mut self, name: &str) {
+        if let Some(lobby) = &mut self.lobby {
+            lobby.remove_player(name);
+        }
+    }
+
+    /// Increase lobby duration setting (host only)
+    pub fn lobby_increase_duration(&mut self) {
+        if let Some(lobby) = &mut self.lobby {
+            if lobby.is_host && lobby.settings.duration_secs < 180 {
+                lobby.settings.duration_secs += 15;
+            }
+        }
+    }
+
+    /// Decrease lobby duration setting (host only)
+    pub fn lobby_decrease_duration(&mut self) {
+        if let Some(lobby) = &mut self.lobby {
+            if lobby.is_host && lobby.settings.duration_secs > 30 {
+                lobby.settings.duration_secs -= 15;
+            }
+        }
+    }
+
+    /// Start the game from lobby (host only)
+    pub fn start_game_from_lobby(&mut self) {
+        if let Some(lobby) = &self.lobby {
+            if lobby.can_start() {
+                // Transition from lobby to game mode
+                let duration = lobby.settings.duration_secs;
+                self.mode = AppMode::Game;
+                // Note: letters will be set when round actually starts
+                self.time_remaining = duration;
+            }
+        }
     }
 }
 
@@ -515,5 +606,132 @@ mod tests {
         assert_eq!(MissReason::TooShort.label(), "Too Short");
         assert_eq!(MissReason::InvalidLetters.label(), "Invalid Letters");
         assert_eq!(MissReason::NotInDictionary.label(), "Not In Dictionary");
+    }
+
+    // === Lobby Tests ===
+
+    #[test]
+    fn test_create_lobby() {
+        let mut app = App::new();
+        assert!(!app.is_in_lobby());
+
+        app.create_lobby("Alice".to_string());
+        assert!(app.is_in_lobby());
+        assert!(app.is_lobby_host());
+        assert_eq!(app.mode, AppMode::Lobby);
+        assert!(app.lobby.is_some());
+
+        let lobby = app.lobby.as_ref().unwrap();
+        assert_eq!(lobby.player_count(), 1);
+        assert_eq!(lobby.local_player, "Alice");
+    }
+
+    #[test]
+    fn test_join_lobby() {
+        let mut app = App::new();
+
+        app.join_lobby("TEST-LOBBY".to_string(), "Bob".to_string());
+        assert!(app.is_in_lobby());
+        assert!(!app.is_lobby_host());
+
+        let lobby = app.lobby.as_ref().unwrap();
+        assert_eq!(lobby.name, "TEST-LOBBY");
+        assert_eq!(lobby.local_player, "Bob");
+    }
+
+    #[test]
+    fn test_leave_lobby() {
+        let mut app = App::new();
+        app.create_lobby("Alice".to_string());
+        assert!(app.is_in_lobby());
+
+        app.leave_lobby();
+        assert!(!app.is_in_lobby());
+        assert!(app.lobby.is_none());
+        assert_eq!(app.mode, AppMode::Game);
+    }
+
+    #[test]
+    fn test_lobby_add_remove_players() {
+        let mut app = App::new();
+        app.create_lobby("Alice".to_string());
+
+        app.lobby_add_player("Bob".to_string());
+        assert_eq!(app.lobby.as_ref().unwrap().player_count(), 2);
+
+        app.lobby_add_player("Charlie".to_string());
+        assert_eq!(app.lobby.as_ref().unwrap().player_count(), 3);
+
+        app.lobby_remove_player("Bob");
+        assert_eq!(app.lobby.as_ref().unwrap().player_count(), 2);
+    }
+
+    #[test]
+    fn test_lobby_duration_settings() {
+        let mut app = App::new();
+        app.create_lobby("Alice".to_string());
+
+        let initial_duration = app.lobby.as_ref().unwrap().settings.duration_secs;
+
+        app.lobby_increase_duration();
+        assert_eq!(
+            app.lobby.as_ref().unwrap().settings.duration_secs,
+            initial_duration + 15
+        );
+
+        app.lobby_decrease_duration();
+        assert_eq!(
+            app.lobby.as_ref().unwrap().settings.duration_secs,
+            initial_duration
+        );
+    }
+
+    #[test]
+    fn test_lobby_duration_limits() {
+        let mut app = App::new();
+        app.create_lobby("Alice".to_string());
+
+        // Decrease to minimum
+        for _ in 0..20 {
+            app.lobby_decrease_duration();
+        }
+        assert!(app.lobby.as_ref().unwrap().settings.duration_secs >= 30);
+
+        // Increase to maximum
+        for _ in 0..20 {
+            app.lobby_increase_duration();
+        }
+        assert!(app.lobby.as_ref().unwrap().settings.duration_secs <= 180);
+    }
+
+    #[test]
+    fn test_start_game_from_lobby() {
+        let mut app = App::new();
+        app.create_lobby("Alice".to_string());
+        assert_eq!(app.mode, AppMode::Lobby);
+
+        app.start_game_from_lobby();
+        assert_eq!(app.mode, AppMode::Game);
+    }
+
+    #[test]
+    fn test_non_host_cannot_change_settings() {
+        let mut app = App::new();
+        app.join_lobby("TEST".to_string(), "Bob".to_string());
+
+        let initial_duration = app.lobby.as_ref().unwrap().settings.duration_secs;
+
+        // Non-host attempts to change settings
+        app.lobby_increase_duration();
+        assert_eq!(
+            app.lobby.as_ref().unwrap().settings.duration_secs,
+            initial_duration
+        );
+
+        app.lobby_decrease_duration();
+        assert_eq!(
+            app.lobby.as_ref().unwrap().settings.duration_secs,
+            initial_duration
+        );
     }
 }

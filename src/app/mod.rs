@@ -2,4 +2,4 @@
 
 pub mod state;
 
-pub use state::{App, DEFAULT_ROUND_DURATION};
+pub use state::{App, AppMode, DEFAULT_ROUND_DURATION};
