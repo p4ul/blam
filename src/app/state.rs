@@ -1,5 +1,7 @@
 //! Application state management
 
+use crate::game::validation::{validate_word, ValidationResult};
+
 /// Main application state
 pub struct App {
     /// Whether the application should quit
@@ -58,14 +60,20 @@ impl App {
             return;
         }
 
-        // TODO: Validate word against dictionary and letter rack
-        // For now, just show feedback and clear input
         let word = self.input.clone();
-        let points = word.len() as u32;
+        let result = validate_word(&word, &self.letters);
 
-        // Placeholder validation - always accept for TUI testing
-        self.score += points;
-        self.feedback = format!("OK +{} ({})", points, word.to_uppercase());
+        match result {
+            ValidationResult::Valid => {
+                let points = word.len() as u32;
+                self.score += points;
+                self.feedback = format!("OK +{} ({})", points, word.to_uppercase());
+            }
+            _ => {
+                self.feedback = result.message();
+            }
+        }
+
         self.input.clear();
     }
 
