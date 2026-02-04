@@ -26,10 +26,24 @@ pub fn render(frame: &mut Frame, coordinator: &AppCoordinator) {
             render_browser(frame, lobbies, *selected);
         }
         Screen::HostLobby { lobby, countdown } => {
-            render_host_lobby(frame, &lobby.lobby_name, lobby.players(), lobby.port(), lobby.can_start(), *countdown);
+            render_host_lobby(
+                frame,
+                &lobby.lobby_name,
+                lobby.players(),
+                lobby.port(),
+                lobby.can_start(),
+                *countdown,
+                lobby.current_letters(),
+            );
         }
-        Screen::JoinedLobby { lobby } => {
-            render_joined_lobby(frame, &lobby.lobby_name, &lobby.host_name, lobby.players());
+        Screen::JoinedLobby { lobby, countdown } => {
+            render_joined_lobby(
+                frame,
+                &lobby.lobby_name,
+                &lobby.host_name,
+                lobby.players(),
+                countdown.as_ref(),
+            );
         }
         Screen::Playing { app, .. } => {
             render_game(frame, app);
@@ -177,8 +191,15 @@ fn render_host_lobby(
     port: u16,
     can_start: bool,
     countdown: Option<u32>,
+    letters: &[char],
 ) {
     let area = frame.area();
+
+    // If in countdown, render the countdown screen
+    if let Some(count) = countdown {
+        render_countdown(frame, area, count, letters);
+        return;
+    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)
@@ -223,16 +244,14 @@ fn render_host_lobby(
         .block(Block::default().borders(Borders::ALL).title("Players"));
     frame.render_widget(list, layout[2]);
 
-    // Start button or countdown
-    let start_text = if let Some(count) = countdown {
-        format!("Starting in {}...", count)
-    } else if can_start {
+    // Start button
+    let start_text = if can_start {
         "[ Press ENTER to START ]".to_string()
     } else {
         "Waiting for players (need at least 2)".to_string()
     };
 
-    let start_style = if can_start && countdown.is_none() {
+    let start_style = if can_start {
         Style::default().fg(Color::Green).bold()
     } else {
         Style::default().fg(Color::DarkGray)
@@ -250,9 +269,64 @@ fn render_host_lobby(
     frame.render_widget(footer, layout[4]);
 }
 
+/// Render the countdown screen (3-2-1-BLAM!)
+fn render_countdown(frame: &mut Frame, area: Rect, count: u32, letters: &[char]) {
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(30),  // Top spacer
+            Constraint::Length(5),       // Big countdown number
+            Constraint::Length(3),       // Letters preview
+            Constraint::Percentage(30),  // Bottom spacer
+        ])
+        .margin(2)
+        .split(area);
+
+    // Big countdown number
+    let countdown_text = match count {
+        3 => "   3",
+        2 => "   2",
+        1 => "   1",
+        0 => "BLAM!",
+        _ => &format!("   {}", count),
+    };
+
+    let countdown_color = match count {
+        3 => Color::Green,
+        2 => Color::Yellow,
+        1 => Color::Red,
+        0 => Color::Magenta,
+        _ => Color::White,
+    };
+
+    let countdown = Paragraph::new(countdown_text)
+        .style(Style::default().fg(countdown_color).bold())
+        .alignment(Alignment::Center);
+    frame.render_widget(countdown, layout[1]);
+
+    // Letters preview
+    let letters_display = format_letter_rack(letters);
+    let letters_widget = Paragraph::new(letters_display)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center);
+    frame.render_widget(letters_widget, layout[2]);
+}
+
 /// Render the joined lobby screen
-fn render_joined_lobby(frame: &mut Frame, lobby_name: &str, host_name: &str, players: &[Player]) {
+fn render_joined_lobby(
+    frame: &mut Frame,
+    lobby_name: &str,
+    host_name: &str,
+    players: &[Player],
+    countdown: Option<&(u32, Vec<char>, u32)>,
+) {
     let area = frame.area();
+
+    // If in countdown, render the countdown screen
+    if let Some((count, letters, _duration)) = countdown {
+        render_countdown(frame, area, *count, letters);
+        return;
+    }
 
     let layout = Layout::default()
         .direction(Direction::Vertical)

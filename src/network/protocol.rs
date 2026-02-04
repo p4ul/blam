@@ -60,6 +60,8 @@ pub enum Message {
     },
     /// Word claimed by a player (broadcast, legacy compatibility)
     Claim { player_name: String, word: String, points: u32 },
+    /// Countdown to round start (3, 2, 1, BLAM!)
+    Countdown { letters: Vec<char>, duration_secs: u32, countdown_secs: u32 },
     /// Round starting with these letters and duration
     RoundStart { letters: Vec<char>, duration_secs: u32 },
     /// Round has ended
@@ -148,6 +150,15 @@ impl Message {
                     escape_json(player_name),
                     escape_json(word),
                     points
+                )
+            }
+            Message::Countdown { letters, duration_secs, countdown_secs } => {
+                let letters_json: String = letters.iter().map(|c| format!(r#""{}""#, c)).collect::<Vec<_>>().join(",");
+                format!(
+                    r#"{{"type":"countdown","letters":[{}],"duration_secs":{},"countdown_secs":{}}}"#,
+                    letters_json,
+                    duration_secs,
+                    countdown_secs
                 )
             }
             Message::RoundStart { letters, duration_secs } => {
@@ -304,6 +315,15 @@ impl Message {
                 let points = get_u32("points")
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing points"))?;
                 Ok(Message::Claim { player_name, word, points })
+            }
+            "countdown" => {
+                let letters = get_chars("letters")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing letters"))?;
+                let duration_secs = get_u32("duration_secs")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing duration_secs"))?;
+                let countdown_secs = get_u32("countdown_secs")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing countdown_secs"))?;
+                Ok(Message::Countdown { letters, duration_secs, countdown_secs })
             }
             "round_start" => {
                 let letters = get_chars("letters")
@@ -512,6 +532,19 @@ mod tests {
                 ("Alice".to_string(), 15),
                 ("Bob".to_string(), 12),
             ],
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_countdown_roundtrip() {
+        let msg = Message::Countdown {
+            letters: vec!['B', 'L', 'A', 'M'],
+            duration_secs: 60,
+            countdown_secs: 3,
         };
         let bytes = msg.to_bytes();
         let (parsed, len) = Message::from_bytes(&bytes).unwrap();

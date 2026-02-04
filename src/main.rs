@@ -54,10 +54,38 @@ fn main() -> io::Result<()> {
             last_tick = Instant::now();
         }
 
-        // Handle second-based timer for game play
+        // Handle second-based timer for game play and countdown
         if last_second.elapsed() >= Duration::from_secs(1) {
-            if let Screen::Playing { app, .. } = &mut coordinator.screen {
-                app.tick();
+            match &mut coordinator.screen {
+                Screen::Playing { app, .. } => {
+                    app.tick();
+                }
+                Screen::HostLobby { lobby, countdown } => {
+                    if countdown.is_some() {
+                        // Tick the countdown
+                        if let Some(event) = lobby.tick_countdown() {
+                            match event {
+                                lobby::LobbyEvent::Countdown {
+                                    countdown: count, ..
+                                } => {
+                                    *countdown = Some(count);
+                                }
+                                lobby::LobbyEvent::RoundStart { letters, duration } => {
+                                    // Countdown finished - transition to playing
+                                    let mut app = app::App::new();
+                                    app.start_round(letters, duration);
+                                    coordinator.screen = Screen::Playing {
+                                        app,
+                                        is_host: true,
+                                        hosted_lobby: None, // TODO: keep lobby alive for arbitration
+                                    };
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                _ => {}
             }
             last_second = Instant::now();
         }
@@ -104,25 +132,18 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
             KeyCode::Enter => coordinator.browser_select(),
             _ => {}
         },
-        Screen::HostLobby { lobby, .. } => match code {
+        Screen::HostLobby { lobby, countdown } => match code {
             KeyCode::Esc => {
                 // TODO: Clean shutdown of lobby
                 coordinator.go_to_menu();
             }
             KeyCode::Enter => {
-                if lobby.can_start() {
-                    // Generate letters and start round
+                // Only start countdown if we're not already counting down
+                if lobby.can_start() && countdown.is_none() {
+                    // Generate letters and start countdown
                     let letters = LetterRack::generate().letters().to_vec();
-                    lobby.start_round(letters.clone(), DEFAULT_ROUND_DURATION);
-
-                    // Transition to playing
-                    let mut app = app::App::new();
-                    app.start_round(letters, DEFAULT_ROUND_DURATION);
-                    coordinator.screen = Screen::Playing {
-                        app,
-                        is_host: true,
-                        hosted_lobby: None, // TODO: keep lobby alive for results
-                    };
+                    let count = lobby.start_countdown(letters, DEFAULT_ROUND_DURATION);
+                    *countdown = Some(count);
                 }
             }
             _ => {}

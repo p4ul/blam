@@ -54,6 +54,12 @@ pub enum LobbyEvent {
     PlayerJoined(String),
     /// A player left the lobby
     PlayerLeft(String),
+    /// Countdown to round start
+    Countdown {
+        letters: Vec<char>,
+        duration: u32,
+        countdown: u32,
+    },
     /// The round is starting with these letters
     RoundStart { letters: Vec<char>, duration: u32 },
     /// A claim was accepted (broadcast to all)
@@ -99,6 +105,10 @@ pub struct HostedLobby {
     arbitrator: Option<RoundArbitrator>,
     /// Current letters for the round
     current_letters: Vec<char>,
+    /// Round duration (seconds)
+    round_duration: u32,
+    /// Current countdown value (seconds remaining until start)
+    countdown_remaining: u32,
 }
 
 impl HostedLobby {
@@ -140,6 +150,8 @@ impl HostedLobby {
             actor_id,
             arbitrator: None,
             current_letters: Vec::new(),
+            round_duration: 0,
+            countdown_remaining: 0,
         })
     }
 
@@ -386,6 +398,94 @@ impl HostedLobby {
             .unwrap_or_default()
     }
 
+    /// Start the countdown sequence (3-2-1-BLAM!)
+    /// Returns the initial countdown value
+    pub fn start_countdown(&mut self, letters: Vec<char>, duration: u32) -> u32 {
+        const COUNTDOWN_SECONDS: u32 = 3;
+
+        self.current_letters = letters.clone();
+        self.round_duration = duration;
+        self.countdown_remaining = COUNTDOWN_SECONDS;
+        self.state = LobbyState::Countdown(COUNTDOWN_SECONDS);
+
+        // Broadcast countdown to all clients
+        let msg = Message::Countdown {
+            letters,
+            duration_secs: duration,
+            countdown_secs: COUNTDOWN_SECONDS,
+        };
+        self.server.broadcast(&msg);
+
+        COUNTDOWN_SECONDS
+    }
+
+    /// Tick the countdown, returns true if countdown finished and round should start
+    pub fn tick_countdown(&mut self) -> Option<LobbyEvent> {
+        if let LobbyState::Countdown(count) = &mut self.state {
+            if *count > 1 {
+                *count -= 1;
+                self.countdown_remaining = *count;
+
+                // Broadcast updated countdown
+                let msg = Message::Countdown {
+                    letters: self.current_letters.clone(),
+                    duration_secs: self.round_duration,
+                    countdown_secs: *count,
+                };
+                self.server.broadcast(&msg);
+
+                Some(LobbyEvent::Countdown {
+                    letters: self.current_letters.clone(),
+                    duration: self.round_duration,
+                    countdown: *count,
+                })
+            } else {
+                // Countdown finished - start the round
+                self.begin_round();
+                Some(LobbyEvent::RoundStart {
+                    letters: self.current_letters.clone(),
+                    duration: self.round_duration,
+                })
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Internal: Actually begin the round after countdown
+    fn begin_round(&mut self) {
+        self.state = LobbyState::Starting;
+
+        // Create the arbitrator with all player names
+        let player_names: Vec<String> = self.players.iter().map(|p| p.name.clone()).collect();
+        self.arbitrator = Some(RoundArbitrator::new(
+            self.current_letters.clone(),
+            &player_names,
+        ));
+
+        // Broadcast round start to all connected clients
+        let msg = Message::RoundStart {
+            letters: self.current_letters.clone(),
+            duration_secs: self.round_duration,
+        };
+        self.server.broadcast(&msg);
+    }
+
+    /// Get the current countdown remaining (0 if not in countdown)
+    pub fn countdown_remaining(&self) -> u32 {
+        self.countdown_remaining
+    }
+
+    /// Get the current letters (for display during countdown)
+    pub fn current_letters(&self) -> &[char] {
+        &self.current_letters
+    }
+
+    /// Get the round duration (for display during countdown)
+    pub fn round_duration(&self) -> u32 {
+        self.round_duration
+    }
+
     /// Start the round - broadcast to all players
     pub fn start_round(&mut self, letters: Vec<char>, duration: u32) {
         self.state = LobbyState::Starting;
@@ -426,6 +526,12 @@ pub struct JoinedLobby {
     players: Vec<Player>,
     /// Current lobby state
     pub state: LobbyState,
+    /// Letters for upcoming round (set during countdown)
+    pending_letters: Vec<char>,
+    /// Duration for upcoming round (set during countdown)
+    pending_duration: u32,
+    /// Current countdown value
+    countdown_remaining: u32,
 }
 
 impl JoinedLobby {
@@ -468,6 +574,9 @@ impl JoinedLobby {
             client,
             players: vec![host_player, our_player],
             state: LobbyState::Waiting,
+            pending_letters: Vec::new(),
+            pending_duration: 0,
+            countdown_remaining: 0,
         })
     }
 
@@ -494,8 +603,24 @@ impl JoinedLobby {
         // Poll for messages from host
         for msg in self.client.poll() {
             match msg {
+                Message::Countdown {
+                    letters,
+                    duration_secs,
+                    countdown_secs,
+                } => {
+                    self.pending_letters = letters.clone();
+                    self.pending_duration = duration_secs;
+                    self.countdown_remaining = countdown_secs;
+                    self.state = LobbyState::Countdown(countdown_secs);
+                    events.push(LobbyEvent::Countdown {
+                        letters,
+                        duration: duration_secs,
+                        countdown: countdown_secs,
+                    });
+                }
                 Message::RoundStart { letters, duration_secs } => {
                     self.state = LobbyState::Starting;
+                    self.countdown_remaining = 0;
                     events.push(LobbyEvent::RoundStart {
                         letters,
                         duration: duration_secs,
@@ -542,6 +667,21 @@ impl JoinedLobby {
         }
 
         events
+    }
+
+    /// Get the current countdown remaining (0 if not in countdown)
+    pub fn countdown_remaining(&self) -> u32 {
+        self.countdown_remaining
+    }
+
+    /// Get the pending letters (for display during countdown)
+    pub fn pending_letters(&self) -> &[char] {
+        &self.pending_letters
+    }
+
+    /// Get the pending round duration (for display during countdown)
+    pub fn pending_duration(&self) -> u32 {
+        self.pending_duration
     }
 
     /// Send a claim attempt to the host

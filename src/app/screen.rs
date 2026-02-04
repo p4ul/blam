@@ -69,6 +69,8 @@ pub enum Screen {
     /// Joined a lobby
     JoinedLobby {
         lobby: JoinedLobby,
+        /// Countdown state (seconds remaining, letters, duration)
+        countdown: Option<(u32, Vec<char>, u32)>,
     },
     /// Playing a round (solo or multiplayer)
     Playing {
@@ -139,7 +141,7 @@ impl AppCoordinator {
             Screen::Menu { handle, .. } => handle.clone(),
             Screen::Browser { player_name, .. } => player_name.clone(),
             Screen::HostLobby { lobby, .. } => lobby.host_name.clone(),
-            Screen::JoinedLobby { lobby } => lobby.player_name.clone(),
+            Screen::JoinedLobby { lobby, .. } => lobby.player_name.clone(),
             Screen::Playing { .. } => "Player".to_string(),
             Screen::Error { .. } => "Player".to_string(),
         }
@@ -295,7 +297,7 @@ impl AppCoordinator {
 
         match JoinedLobby::join(&peer, player_name) {
             Ok(lobby) => {
-                self.screen = Screen::JoinedLobby { lobby };
+                self.screen = Screen::JoinedLobby { lobby, countdown: None };
             }
             Err(e) => {
                 self.screen = Screen::Error { message: e };
@@ -330,10 +332,17 @@ impl AppCoordinator {
                 let _events = lobby.poll();
                 // Events are handled - player list is updated internally
             }
-            Screen::JoinedLobby { lobby } => {
+            Screen::JoinedLobby { lobby, countdown } => {
                 let events = lobby.poll();
                 for event in events {
                     match event {
+                        LobbyEvent::Countdown {
+                            letters,
+                            duration,
+                            countdown: count,
+                        } => {
+                            *countdown = Some((count, letters, duration));
+                        }
                         LobbyEvent::RoundStart { letters, duration } => {
                             let mut app = App::new();
                             app.start_round(letters, duration);
