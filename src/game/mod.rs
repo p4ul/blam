@@ -1,5 +1,7 @@
 //! Game logic: rounds, scoring, letter racks, word validation
 
+pub mod dictionary;
+
 use rand::distr::weighted::WeightedIndex;
 use rand::prelude::*;
 
