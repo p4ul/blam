@@ -84,6 +84,20 @@ pub enum Message {
     RoundStart { letters: Vec<char>, duration_secs: u32 },
     /// Round has ended
     RoundEnd,
+    /// Match completed event for CRDT log (host -> all)
+    ///
+    /// Contains final scores and match metadata for Elo calculations
+    /// and stats tracking. Used for deterministic replay of match history.
+    MatchEnded {
+        /// Unique match ID (timestamp-based for deterministic ordering)
+        match_id: i64,
+        /// Final scores for each player: (player_handle, score)
+        scores: Vec<(String, u32)>,
+        /// Actor ID of the host that ran this match
+        host_actor_id: String,
+        /// Whether the match completed successfully
+        completed: bool,
+    },
     /// Scoreboard update (host -> all)
     ScoreUpdate { scores: Vec<(String, u32)> },
     /// Ping to check connection
@@ -219,6 +233,20 @@ impl Message {
                 )
             }
             Message::RoundEnd => r#"{"type":"round_end"}"#.to_string(),
+            Message::MatchEnded { match_id, scores, host_actor_id, completed } => {
+                let scores_json: String = scores
+                    .iter()
+                    .map(|(name, score)| format!(r#"["{}",{}]"#, escape_json(name), score))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(
+                    r#"{{"type":"match_ended","match_id":{},"scores":[{}],"host_actor_id":"{}","completed":{}}}"#,
+                    match_id,
+                    scores_json,
+                    escape_json(host_actor_id),
+                    completed
+                )
+            }
             Message::ScoreUpdate { scores } => {
                 let scores_json: String = scores
                     .iter()
@@ -284,6 +312,27 @@ impl Message {
             let rest = &json[start..];
             let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
             rest[..end].parse().ok()
+        };
+
+        let get_i64 = |key: &str| -> Option<i64> {
+            let pattern = format!(r#""{}":"#, key);
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = &json[start..];
+            let end = rest.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(rest.len());
+            rest[..end].parse().ok()
+        };
+
+        let get_bool = |key: &str| -> Option<bool> {
+            let pattern = format!(r#""{}":"#, key);
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = &json[start..].trim_start();
+            if rest.starts_with("true") {
+                Some(true)
+            } else if rest.starts_with("false") {
+                Some(false)
+            } else {
+                None
+            }
         };
 
         let get_chars = |key: &str| -> Option<Vec<char>> {
@@ -437,6 +486,21 @@ impl Message {
                 Ok(Message::RoundStart { letters, duration_secs })
             }
             "round_end" => Ok(Message::RoundEnd),
+            "match_ended" => {
+                let match_id = get_i64("match_id")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing match_id"))?;
+                let scores = get_scores()
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing or invalid scores"))?;
+                let host_actor_id = get_str("host_actor_id")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing host_actor_id"))?;
+                let completed = get_bool("completed").unwrap_or(true);
+                Ok(Message::MatchEnded {
+                    match_id,
+                    scores,
+                    host_actor_id,
+                    completed,
+                })
+            }
             "score_update" => {
                 let scores = get_scores()
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing or invalid scores"))?;
@@ -790,6 +854,37 @@ mod tests {
             actor_id: "blam-12345678".to_string(),
             timestamp_ms: 1704067200000,
             claim_sequence: 42,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_match_ended_roundtrip() {
+        let msg = Message::MatchEnded {
+            match_id: 1704067200000,
+            scores: vec![
+                ("Alice".to_string(), 50),
+                ("Bob".to_string(), 30),
+            ],
+            host_actor_id: "host123".to_string(),
+            completed: true,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_match_ended_incomplete() {
+        let msg = Message::MatchEnded {
+            match_id: 1704067200000,
+            scores: vec![("Alice".to_string(), 25)],
+            host_actor_id: "host123".to_string(),
+            completed: false,
         };
         let bytes = msg.to_bytes();
         let (parsed, len) = Message::from_bytes(&bytes).unwrap();

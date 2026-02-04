@@ -6,6 +6,7 @@ mod app;
 mod game;
 mod lobby;
 mod network;
+mod stats;
 mod storage;
 mod tui;
 
