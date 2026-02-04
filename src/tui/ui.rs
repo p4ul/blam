@@ -33,7 +33,12 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(area);
 
     render_header(frame, layout[0], app);
-    render_main(frame, layout[1], app);
+
+    if app.is_round_over() {
+        render_end_of_round(frame, layout[1], app);
+    } else {
+        render_main(frame, layout[1], app);
+    }
 }
 
 /// Render the header: logo, letter rack, timer
@@ -116,6 +121,41 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     let score = Paragraph::new(score_display)
         .style(Style::default().fg(Color::Magenta).bold());
     frame.render_widget(score, main_layout[4]);
+}
+
+/// Render the end-of-round summary
+fn render_end_of_round(frame: &mut Frame, area: Rect, app: &App) {
+    let main_layout = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints([
+            Constraint::Length(2), // Title
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Final score
+            Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Instructions
+            Constraint::Min(0),    // Remaining space
+        ])
+        .split(area);
+
+    // TIME'S UP title
+    let title = Paragraph::new("⏱  TIME'S UP!")
+        .style(Style::default().fg(Color::Red).bold())
+        .alignment(Alignment::Center);
+    frame.render_widget(title, main_layout[0]);
+
+    // Final score
+    let score_text = format!("Final Score: {}", app.score);
+    let score = Paragraph::new(score_text)
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center);
+    frame.render_widget(score, main_layout[2]);
+
+    // Instructions
+    let instructions = Paragraph::new("Press ESC to quit")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(instructions, main_layout[4]);
 }
 
 /// Format the letter rack for display

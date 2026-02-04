@@ -8,7 +8,7 @@ mod network;
 mod storage;
 mod tui;
 
-use app::App;
+use app::{App, DEFAULT_ROUND_DURATION};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use std::io;
 use std::time::{Duration, Instant};
@@ -23,7 +23,7 @@ fn main() -> io::Result<()> {
     let mut app = App::new();
     app.start_round(
         vec!['B', 'L', 'A', 'M', 'T', 'Y', 'P', 'E', 'R', 'S', 'O', 'N'],
-        60,
+        DEFAULT_ROUND_DURATION,
     );
 
     // Main event loop
