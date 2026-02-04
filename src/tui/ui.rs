@@ -411,8 +411,35 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(timer, header_layout[2]);
 }
 
-/// Render the main content area: input, feedback, score
+/// Render the main content area: input, feedback, score, with optional side panels
 fn render_main(frame: &mut Frame, area: Rect, app: &App) {
+    // Check if we have multiplayer content to show
+    let has_scoreboard = !app.scoreboard.is_empty();
+    let has_claim_feed = !app.claim_feed.is_empty();
+    let has_side_panels = has_scoreboard || has_claim_feed;
+
+    if has_side_panels {
+        // Three-column layout: main | scoreboard | claim feed
+        let horizontal_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(30),       // Main area
+                Constraint::Length(20),    // Scoreboard
+                Constraint::Length(25),    // Claim feed
+            ])
+            .split(area);
+
+        render_input_area(frame, horizontal_layout[0], app);
+        render_scoreboard(frame, horizontal_layout[1], app);
+        render_claim_feed(frame, horizontal_layout[2], app);
+    } else {
+        // Solo mode - just the input area
+        render_input_area(frame, area, app);
+    }
+}
+
+/// Render the input/feedback area (center panel)
+fn render_input_area(frame: &mut Frame, area: Rect, app: &App) {
     // Vertical layout for main content
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -444,6 +471,74 @@ fn render_main(frame: &mut Frame, area: Rect, app: &App) {
     let score = Paragraph::new(score_display)
         .style(Style::default().fg(Color::Magenta).bold());
     frame.render_widget(score, main_layout[4]);
+}
+
+/// Render the live scoreboard (right panel)
+fn render_scoreboard(frame: &mut Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = app
+        .scoreboard
+        .iter()
+        .enumerate()
+        .map(|(i, player)| {
+            let prefix = match i {
+                0 => "🥇",
+                1 => "🥈",
+                2 => "🥉",
+                _ => "  ",
+            };
+            let is_local = app.player_name.as_ref() == Some(&player.name);
+            let style = if is_local {
+                Style::default().fg(Color::Cyan).bold()
+            } else if i == 0 {
+                Style::default().fg(Color::Yellow)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            ListItem::new(format!("{} {} - {}", prefix, player.name, player.score)).style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Scoreboard"),
+        );
+    frame.render_widget(list, area);
+}
+
+/// Render the claim feed (rightmost panel)
+fn render_claim_feed(frame: &mut Frame, area: Rect, app: &App) {
+    // Show most recent claims first (reverse order)
+    let items: Vec<ListItem> = app
+        .claim_feed
+        .iter()
+        .rev()
+        .take(8)
+        .map(|entry| {
+            let is_local = app.player_name.as_ref() == Some(&entry.player_name);
+            let style = if is_local {
+                Style::default().fg(Color::Cyan)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            ListItem::new(format!(
+                "{}: {} +{}",
+                entry.player_name, entry.word, entry.points
+            ))
+            .style(style)
+        })
+        .collect();
+
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray))
+                .title("Claims"),
+        );
+    frame.render_widget(list, area);
 }
 
 /// Render the end-of-round summary
@@ -511,9 +606,17 @@ fn format_feedback(feedback: &str) -> (String, Color) {
 
     let color = if feedback.starts_with("OK") {
         Color::Green
-    } else if feedback.starts_with("NOPE") || feedback.starts_with("CLANK") {
+    } else if feedback.starts_with("NOPE")
+        || feedback.starts_with("CLANK")
+        || feedback.starts_with("Not in dictionary")
+        || feedback.starts_with("Missing")
+        || feedback.starts_with("Too short")
+    {
         Color::Red
-    } else if feedback.starts_with("TOO LATE") {
+    } else if feedback.starts_with("TOO LATE")
+        || feedback.starts_with("Already claimed")
+        || feedback.starts_with("Round has ended")
+    {
         Color::Yellow
     } else {
         Color::White
