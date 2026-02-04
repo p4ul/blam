@@ -90,6 +90,26 @@ pub enum Message {
     Ping,
     /// Response to ping
     Pong,
+    /// CRDT sync: Request missing events by sending our vector clock
+    /// Each entry is (actor_id_hex, highest_seq_seen)
+    SyncRequest { vector_clock: Vec<(String, i64)> },
+    /// CRDT sync: Send events the peer is missing
+    SyncEvents { events: Vec<SyncEvent> },
+}
+
+/// An event for CRDT sync (matches storage::Event but with hex actor_id for JSON)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncEvent {
+    /// Actor ID as hex string (32 chars)
+    pub actor_id: String,
+    /// Sequence number
+    pub seq: i64,
+    /// Event type
+    pub event_type: String,
+    /// JSON payload
+    pub payload: String,
+    /// Unix timestamp (ms)
+    pub created_at: i64,
 }
 
 impl Message {
@@ -209,6 +229,31 @@ impl Message {
             }
             Message::Ping => r#"{"type":"ping"}"#.to_string(),
             Message::Pong => r#"{"type":"pong"}"#.to_string(),
+            Message::SyncRequest { vector_clock } => {
+                let clock_json: String = vector_clock
+                    .iter()
+                    .map(|(actor_id, seq)| format!(r#"["{}",{}]"#, escape_json(actor_id), seq))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"sync_request","vector_clock":[{}]}}"#, clock_json)
+            }
+            Message::SyncEvents { events } => {
+                let events_json: String = events
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            r#"{{"actor_id":"{}","seq":{},"event_type":"{}","payload":"{}","created_at":{}}}"#,
+                            escape_json(&e.actor_id),
+                            e.seq,
+                            escape_json(&e.event_type),
+                            escape_json(&e.payload),
+                            e.created_at
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                format!(r#"{{"type":"sync_events","events":[{}]}}"#, events_json)
+            }
         }
     }
 
@@ -399,6 +444,16 @@ impl Message {
             }
             "ping" => Ok(Message::Ping),
             "pong" => Ok(Message::Pong),
+            "sync_request" => {
+                let vector_clock = parse_vector_clock(json)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid vector_clock"))?;
+                Ok(Message::SyncRequest { vector_clock })
+            }
+            "sync_events" => {
+                let events = parse_sync_events(json)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid events"))?;
+                Ok(Message::SyncEvents { events })
+            }
             _ => Err(io::Error::new(io::ErrorKind::InvalidData, format!("unknown message type: {}", msg_type))),
         }
     }
@@ -452,6 +507,160 @@ fn escape_json(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+}
+
+/// Parse vector clock from JSON: [["actor_hex", seq], ...]
+fn parse_vector_clock(json: &str) -> Option<Vec<(String, i64)>> {
+    let pattern = r#""vector_clock":["#;
+    let start = json.find(pattern)? + pattern.len();
+    let rest = &json[start..];
+
+    // Find matching close bracket
+    let mut depth = 1;
+    let mut end = 0;
+    for (i, c) in rest.chars().enumerate() {
+        match c {
+            '[' => depth += 1,
+            ']' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let array = &rest[..end];
+    if array.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut result = Vec::new();
+    let mut current = array;
+
+    while let Some(start) = current.find('[') {
+        let rest = &current[start + 1..];
+        let end = rest.find(']')?;
+        let item = &rest[..end];
+
+        // Parse ["actor_hex", seq]
+        let comma = item.find(',')?;
+        let actor_id = item[..comma].trim().trim_matches('"');
+        let seq_str = item[comma + 1..].trim();
+        let seq: i64 = seq_str.parse().ok()?;
+        result.push((unescape_json(actor_id), seq));
+
+        if end + 1 < rest.len() {
+            current = &rest[end + 1..];
+        } else {
+            break;
+        }
+    }
+
+    Some(result)
+}
+
+/// Parse sync events from JSON: [{actor_id, seq, event_type, payload, created_at}, ...]
+fn parse_sync_events(json: &str) -> Option<Vec<SyncEvent>> {
+    let pattern = r#""events":["#;
+    let start = json.find(pattern)? + pattern.len();
+    let rest = &json[start..];
+
+    // Find matching close bracket, respecting string boundaries
+    let mut depth = 1;
+    let mut end = 0;
+    let mut in_string = false;
+    let mut prev_char = ' ';
+    for (i, c) in rest.chars().enumerate() {
+        if c == '"' && prev_char != '\\' {
+            in_string = !in_string;
+        } else if !in_string {
+            match c {
+                '[' | '{' => depth += 1,
+                ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        prev_char = c;
+    }
+
+    let array = &rest[..end];
+    if array.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let mut result = Vec::new();
+    let mut current = array;
+
+    while let Some(obj_start) = current.find('{') {
+        let rest = &current[obj_start + 1..];
+        // Find matching close brace, respecting strings
+        let mut depth = 1;
+        let mut obj_end = 0;
+        let mut in_string = false;
+        let mut prev_char = ' ';
+        for (i, c) in rest.chars().enumerate() {
+            if c == '"' && prev_char != '\\' {
+                in_string = !in_string;
+            } else if !in_string {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            obj_end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            prev_char = c;
+        }
+        let obj = &rest[..obj_end];
+
+        // Parse object fields
+        let get_str = |key: &str| -> Option<String> {
+            let pattern = format!(r#""{}":""#, key);
+            let s = obj.find(&pattern)? + pattern.len();
+            let r = &obj[s..];
+            let e = find_unescaped_quote(r)?;
+            Some(unescape_json(&r[..e]))
+        };
+
+        let get_i64 = |key: &str| -> Option<i64> {
+            let pattern = format!(r#""{}":"#, key);
+            let s = obj.find(&pattern)? + pattern.len();
+            let r = &obj[s..];
+            let e = r.find(|c: char| !c.is_ascii_digit() && c != '-').unwrap_or(r.len());
+            r[..e].parse().ok()
+        };
+
+        let event = SyncEvent {
+            actor_id: get_str("actor_id")?,
+            seq: get_i64("seq")?,
+            event_type: get_str("event_type")?,
+            payload: get_str("payload")?,
+            created_at: get_i64("created_at")?,
+        };
+        result.push(event);
+
+        if obj_end + 1 < rest.len() {
+            current = &rest[obj_end + 1..];
+        } else {
+            break;
+        }
+    }
+
+    Some(result)
 }
 
 fn unescape_json(s: &str) -> String {
@@ -621,6 +830,64 @@ mod tests {
             duration_secs: 60,
             countdown_secs: 3,
         };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_sync_request_roundtrip() {
+        let msg = Message::SyncRequest {
+            vector_clock: vec![
+                ("0123456789abcdef0123456789abcdef".to_string(), 5),
+                ("fedcba9876543210fedcba9876543210".to_string(), 10),
+            ],
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_sync_request_empty() {
+        let msg = Message::SyncRequest { vector_clock: vec![] };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_sync_events_roundtrip() {
+        let msg = Message::SyncEvents {
+            events: vec![
+                SyncEvent {
+                    actor_id: "0123456789abcdef0123456789abcdef".to_string(),
+                    seq: 1,
+                    event_type: "round_start".to_string(),
+                    payload: r#"{"letters":["B","L","A","M"]}"#.to_string(),
+                    created_at: 1700000000000,
+                },
+                SyncEvent {
+                    actor_id: "0123456789abcdef0123456789abcdef".to_string(),
+                    seq: 2,
+                    event_type: "claim".to_string(),
+                    payload: r#"{"word":"BLAM","player":"Alice"}"#.to_string(),
+                    created_at: 1700000001000,
+                },
+            ],
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_sync_events_empty() {
+        let msg = Message::SyncEvents { events: vec![] };
         let bytes = msg.to_bytes();
         let (parsed, len) = Message::from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);

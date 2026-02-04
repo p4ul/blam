@@ -5,6 +5,9 @@
 //! - SQLite database with schema versioning
 //! - Append-only event log for CRDT sync
 //! - Actor identity management
+//! - CRDT sync logic for peer-to-peer event exchange
+
+pub mod sync;
 
 use directories::ProjectDirs;
 use rusqlite::{params, Connection, Result as SqlResult};
