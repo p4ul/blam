@@ -16,6 +16,7 @@ use rand::prelude::*;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::mpsc::Receiver;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Maximum number of players in a lobby
 pub const MAX_PLAYERS: usize = 12;
@@ -72,6 +73,15 @@ pub enum LobbyEvent {
     ClaimRejected {
         word: String,
         reason: ClaimRejectReason,
+    },
+    /// Word claimed event for CRDT log (broadcast to all)
+    WordClaimed {
+        word: String,
+        player_name: String,
+        points: u32,
+        actor_id: String,
+        timestamp_ms: u64,
+        claim_sequence: u64,
     },
     /// Score update
     ScoreUpdate { scores: Vec<(String, u32)> },
@@ -278,8 +288,14 @@ impl HostedLobby {
         let result = arbitrator.try_claim(word, player_name);
 
         match result {
-            ClaimResult::Accepted { points } => {
+            ClaimResult::Accepted { points, claim_sequence } => {
                 let word_upper = word.to_uppercase();
+
+                // Get timestamp for CRDT event
+                let timestamp_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
 
                 // Broadcast ClaimAccepted to all clients
                 let msg = Message::ClaimAccepted {
@@ -289,6 +305,17 @@ impl HostedLobby {
                 };
                 self.server.broadcast(&msg);
 
+                // Broadcast WordClaimed for CRDT log
+                let crdt_msg = Message::WordClaimed {
+                    word: word_upper.clone(),
+                    player_name: player_name.to_string(),
+                    points,
+                    actor_id: self.actor_id.clone(),
+                    timestamp_ms,
+                    claim_sequence,
+                };
+                self.server.broadcast(&crdt_msg);
+
                 // Also broadcast updated scores
                 let scores = arbitrator.scores();
                 let score_msg = Message::ScoreUpdate { scores: scores.clone() };
@@ -296,9 +323,17 @@ impl HostedLobby {
 
                 Some(vec![
                     LobbyEvent::ClaimAccepted {
+                        word: word_upper.clone(),
+                        player_name: player_name.to_string(),
+                        points,
+                    },
+                    LobbyEvent::WordClaimed {
                         word: word_upper,
                         player_name: player_name.to_string(),
                         points,
+                        actor_id: self.actor_id.clone(),
+                        timestamp_ms,
+                        claim_sequence,
                     },
                     LobbyEvent::ScoreUpdate { scores },
                 ])
@@ -654,6 +689,23 @@ impl JoinedLobby {
                 }
                 Message::ClaimRejected { word, reason } => {
                     events.push(LobbyEvent::ClaimRejected { word, reason });
+                }
+                Message::WordClaimed {
+                    word,
+                    player_name,
+                    points,
+                    actor_id,
+                    timestamp_ms,
+                    claim_sequence,
+                } => {
+                    events.push(LobbyEvent::WordClaimed {
+                        word,
+                        player_name,
+                        points,
+                        actor_id,
+                        timestamp_ms,
+                        claim_sequence,
+                    });
                 }
                 Message::ScoreUpdate { scores } => {
                     events.push(LobbyEvent::ScoreUpdate { scores });

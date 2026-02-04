@@ -58,6 +58,24 @@ pub enum Message {
         word: String,
         reason: ClaimRejectReason,
     },
+    /// Word claimed event for CRDT log (host -> all)
+    ///
+    /// Contains additional metadata for deterministic ordering and
+    /// event replay. Broadcast alongside ClaimAccepted for CRDT consistency.
+    WordClaimed {
+        /// The claimed word (uppercase)
+        word: String,
+        /// Player who claimed it
+        player_name: String,
+        /// Points awarded
+        points: u32,
+        /// Actor ID of the host that validated this claim
+        actor_id: String,
+        /// Timestamp when claim was validated (millis since epoch)
+        timestamp_ms: u64,
+        /// Monotonic sequence number for ordering within the round
+        claim_sequence: u64,
+    },
     /// Word claimed by a player (broadcast, legacy compatibility)
     Claim { player_name: String, word: String, points: u32 },
     /// Countdown to round start (3, 2, 1, BLAM!)
@@ -144,6 +162,17 @@ impl Message {
                     reason_json
                 )
             }
+            Message::WordClaimed { word, player_name, points, actor_id, timestamp_ms, claim_sequence } => {
+                format!(
+                    r#"{{"type":"word_claimed","word":"{}","player_name":"{}","points":{},"actor_id":"{}","timestamp_ms":{},"claim_sequence":{}}}"#,
+                    escape_json(word),
+                    escape_json(player_name),
+                    points,
+                    escape_json(actor_id),
+                    timestamp_ms,
+                    claim_sequence
+                )
+            }
             Message::Claim { player_name, word, points } => {
                 format!(
                     r#"{{"type":"claim","player_name":"{}","word":"{}","points":{}}}"#,
@@ -197,6 +226,14 @@ impl Message {
         };
 
         let get_u32 = |key: &str| -> Option<u32> {
+            let pattern = format!(r#""{}":"#, key);
+            let start = json.find(&pattern)? + pattern.len();
+            let rest = &json[start..];
+            let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+            rest[..end].parse().ok()
+        };
+
+        let get_u64 = |key: &str| -> Option<u64> {
             let pattern = format!(r#""{}":"#, key);
             let start = json.find(&pattern)? + pattern.len();
             let rest = &json[start..];
@@ -306,6 +343,28 @@ impl Message {
                 };
 
                 Ok(Message::ClaimRejected { word, reason })
+            }
+            "word_claimed" => {
+                let word = get_str("word")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing word"))?;
+                let player_name = get_str("player_name")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing player_name"))?;
+                let points = get_u32("points")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing points"))?;
+                let actor_id = get_str("actor_id")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing actor_id"))?;
+                let timestamp_ms = get_u64("timestamp_ms")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing timestamp_ms"))?;
+                let claim_sequence = get_u64("claim_sequence")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing claim_sequence"))?;
+                Ok(Message::WordClaimed {
+                    word,
+                    player_name,
+                    points,
+                    actor_id,
+                    timestamp_ms,
+                    claim_sequence,
+                })
             }
             "claim" => {
                 let player_name = get_str("player_name")
@@ -506,6 +565,22 @@ mod tests {
         let msg = Message::ClaimRejected {
             word: "BLAM".to_string(),
             reason: ClaimRejectReason::AlreadyClaimed { by: "Bob".to_string() },
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_word_claimed_roundtrip() {
+        let msg = Message::WordClaimed {
+            word: "BLAM".to_string(),
+            player_name: "Alice".to_string(),
+            points: 4,
+            actor_id: "blam-12345678".to_string(),
+            timestamp_ms: 1704067200000,
+            claim_sequence: 42,
         };
         let bytes = msg.to_bytes();
         let (parsed, len) = Message::from_bytes(&bytes).unwrap();

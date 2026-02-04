@@ -11,7 +11,12 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClaimResult {
     /// Claim accepted - word is valid and unclaimed
-    Accepted { points: u32 },
+    Accepted {
+        /// Points awarded for the word
+        points: u32,
+        /// Monotonic sequence number for CRDT ordering
+        claim_sequence: u64,
+    },
     /// Claim rejected - word was already claimed
     AlreadyClaimed { by: String },
     /// Claim rejected - word is too short
@@ -34,6 +39,8 @@ pub struct RoundArbitrator {
     scores: HashMap<String, u32>,
     /// Whether the round is still active
     round_active: bool,
+    /// Monotonic counter for claim ordering (for CRDT log)
+    claim_sequence: u64,
 }
 
 impl RoundArbitrator {
@@ -49,6 +56,7 @@ impl RoundArbitrator {
             claimed_words: HashMap::new(),
             scores,
             round_active: true,
+            claim_sequence: 0,
         }
     }
 
@@ -82,7 +90,12 @@ impl RoundArbitrator {
                 // Update player's score
                 *self.scores.entry(player_name.to_string()).or_insert(0) += points;
 
-                ClaimResult::Accepted { points }
+                // Increment and return sequence number for CRDT ordering
+                self.claim_sequence += 1;
+                ClaimResult::Accepted {
+                    points,
+                    claim_sequence: self.claim_sequence,
+                }
             }
             ValidationResult::TooShort { .. } => ClaimResult::TooShort,
             ValidationResult::InvalidLetters { missing } => {
@@ -138,7 +151,7 @@ mod tests {
 
         // Alice claims CAT first
         let result = arb.try_claim("cat", "Alice");
-        assert!(matches!(result, ClaimResult::Accepted { points: 3 }));
+        assert!(matches!(result, ClaimResult::Accepted { points: 3, claim_sequence: 1 }));
 
         // Bob tries to claim CAT - rejected
         let result = arb.try_claim("cat", "Bob");
@@ -154,11 +167,11 @@ mod tests {
 
         // Alice claims CAT
         let result = arb.try_claim("cat", "Alice");
-        assert!(matches!(result, ClaimResult::Accepted { points: 3 }));
+        assert!(matches!(result, ClaimResult::Accepted { points: 3, claim_sequence: 1 }));
 
         // Bob claims DOG
         let result = arb.try_claim("dog", "Bob");
-        assert!(matches!(result, ClaimResult::Accepted { points: 3 }));
+        assert!(matches!(result, ClaimResult::Accepted { points: 3, claim_sequence: 2 }));
     }
 
     #[test]
