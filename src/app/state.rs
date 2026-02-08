@@ -2,6 +2,7 @@
 //! Application state management
 
 use crate::game::validation::{validate_word, ValidationResult};
+use std::collections::VecDeque;
 
 /// Default round duration in seconds
 pub const DEFAULT_ROUND_DURATION: u32 = 60;
@@ -103,8 +104,8 @@ pub struct App {
     missed_words: Vec<MissedWord>,
     /// Multiplayer scoreboard (all players)
     pub scoreboard: Vec<PlayerScore>,
-    /// Recent claims feed (all players)
-    pub claim_feed: Vec<ClaimFeedEntry>,
+    /// Recent claims feed (all players, VecDeque for O(1) front removal)
+    pub claim_feed: VecDeque<ClaimFeedEntry>,
     /// Maximum entries in claim feed
     claim_feed_max: usize,
     /// Local player name (for multiplayer)
@@ -124,7 +125,7 @@ impl Default for App {
             claimed_words: Vec::new(),
             missed_words: Vec::new(),
             scoreboard: Vec::new(),
-            claim_feed: Vec::new(),
+            claim_feed: VecDeque::new(),
             claim_feed_max: 10,
             player_name: None,
         }
@@ -286,14 +287,14 @@ impl App {
     /// Handle a claim accepted from the host (multiplayer)
     pub fn on_claim_accepted(&mut self, word: String, player_name: String, points: u32) {
         // Add to claim feed
-        self.claim_feed.push(ClaimFeedEntry {
+        self.claim_feed.push_back(ClaimFeedEntry {
             player_name: player_name.clone(),
             word: word.clone(),
             points,
         });
-        // Trim feed if too long
+        // Trim feed if too long (O(1) with VecDeque)
         while self.claim_feed.len() > self.claim_feed_max {
-            self.claim_feed.remove(0);
+            self.claim_feed.pop_front();
         }
 
         // If it's our claim, update our state

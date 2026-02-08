@@ -536,9 +536,8 @@ fn render_input_area(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(input, main_layout[0]);
 
     // Feedback line
-    let (feedback_text, feedback_color) = format_feedback(&app.feedback);
-    let feedback = Paragraph::new(feedback_text)
-        .style(Style::default().fg(feedback_color));
+    let feedback = Paragraph::new(app.feedback.as_str())
+        .style(Style::default().fg(feedback_color(&app.feedback)));
     frame.render_widget(feedback, main_layout[2]);
 
     // Score
@@ -690,13 +689,16 @@ fn format_letter_rack(letters: &[char]) -> String {
         return String::from("[ Press ENTER to start ]");
     }
 
-    let letters_str: String = letters
-        .iter()
-        .map(|c| c.to_ascii_uppercase().to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    format!("[ {} ]", letters_str)
+    let mut result = String::with_capacity(4 + letters.len() * 2);
+    result.push_str("[ ");
+    for (i, c) in letters.iter().enumerate() {
+        if i > 0 {
+            result.push(' ');
+        }
+        result.push(c.to_ascii_uppercase());
+    }
+    result.push_str(" ]");
+    result
 }
 
 /// Format the timer display
@@ -706,13 +708,11 @@ fn format_timer(seconds: u32) -> String {
     format!("{}:{:02}", mins, secs)
 }
 
-/// Format feedback with appropriate color
-fn format_feedback(feedback: &str) -> (String, Color) {
+/// Get the appropriate color for feedback text (avoids cloning the string)
+fn feedback_color(feedback: &str) -> Color {
     if feedback.is_empty() {
-        return (String::new(), Color::White);
-    }
-
-    let color = if feedback.starts_with("OK") {
+        Color::White
+    } else if feedback.starts_with("OK") {
         Color::Green
     } else if feedback.starts_with("NOPE")
         || feedback.starts_with("CLANK")
@@ -728,9 +728,7 @@ fn format_feedback(feedback: &str) -> (String, Color) {
         Color::Yellow
     } else {
         Color::White
-    };
-
-    (feedback.to_string(), color)
+    }
 }
 
 // Legacy function for backwards compatibility

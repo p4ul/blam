@@ -2,7 +2,7 @@
 //! Peer connection handling
 
 use super::protocol::Message;
-use std::io::{self, ErrorKind};
+use std::io::{self, ErrorKind, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
 use std::thread;
@@ -14,8 +14,8 @@ pub struct Peer {
     pub addr: SocketAddr,
     /// Peer's player name (once they've joined)
     pub player_name: Option<String>,
-    /// Channel to send messages to this peer
-    tx: Sender<Message>,
+    /// Channel to send pre-serialized bytes to this peer
+    tx: Sender<Vec<u8>>,
     /// Channel to receive messages from this peer
     rx: Receiver<Message>,
     /// Whether the connection is still alive
@@ -32,17 +32,20 @@ impl Peer {
         stream.set_read_timeout(Some(Duration::from_millis(100)))?;
         stream.set_write_timeout(Some(Duration::from_secs(5)))?;
 
-        let (outgoing_tx, outgoing_rx) = channel::<Message>();
+        let (outgoing_tx, outgoing_rx) = channel::<Vec<u8>>();
         let (incoming_tx, incoming_rx) = channel::<Message>();
 
         // Clone stream for writer thread
         let read_stream = stream.try_clone()?;
         let mut write_stream = stream;
 
-        // Writer thread
+        // Writer thread: receives pre-serialized bytes and writes them
         thread::spawn(move || {
-            while let Ok(msg) = outgoing_rx.recv() {
-                if msg.write_to(&mut write_stream).is_err() {
+            while let Ok(bytes) = outgoing_rx.recv() {
+                if write_stream.write_all(&bytes).is_err() {
+                    break;
+                }
+                if write_stream.flush().is_err() {
                     break;
                 }
             }
@@ -85,10 +88,15 @@ impl Peer {
         Self::new(stream)
     }
 
-    /// Send a message to this peer
+    /// Send a message to this peer (serializes and sends)
     pub fn send(&self, msg: Message) -> io::Result<()> {
+        self.send_raw(msg.to_bytes())
+    }
+
+    /// Send pre-serialized bytes to this peer (avoids redundant serialization in broadcast)
+    pub fn send_raw(&self, bytes: Vec<u8>) -> io::Result<()> {
         self.tx
-            .send(msg)
+            .send(bytes)
             .map_err(|_| io::Error::new(ErrorKind::BrokenPipe, "peer disconnected"))
     }
 
@@ -137,7 +145,7 @@ mod tests {
 
         // Connect in a separate thread
         let handle = thread::spawn(move || {
-            let mut peer = Peer::connect(addr).unwrap();
+            let peer = Peer::connect(addr).unwrap();
             peer.send(Message::Ping).unwrap();
             thread::sleep(Duration::from_millis(100));
             peer

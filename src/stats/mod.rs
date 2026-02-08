@@ -584,7 +584,7 @@ mod tests {
 
     #[test]
     fn test_deterministic_replay() {
-        let mut matches = vec![
+        let matches = vec![
             MatchResult::new(3, vec![("A".to_string(), 50), ("B".to_string(), 30)], "h".to_string()),
             MatchResult::new(1, vec![("A".to_string(), 20), ("B".to_string(), 40)], "h".to_string()),
             MatchResult::new(2, vec![("A".to_string(), 30), ("B".to_string(), 30)], "h".to_string()),

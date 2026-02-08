@@ -83,7 +83,7 @@ fn check_letters_available(word: &str, rack: &[char]) -> Option<Vec<char>> {
 
     for c in word.chars() {
         if let Some(pos) = available.iter().position(|&r| r == c) {
-            available.remove(pos);
+            available.swap_remove(pos);
         } else {
             missing.push(c);
         }

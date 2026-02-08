@@ -124,18 +124,20 @@ impl Server {
         events
     }
 
-    /// Broadcast a message to all connected peers
+    /// Broadcast a message to all connected peers (serializes once)
     pub fn broadcast(&self, msg: &Message) {
+        let bytes = msg.to_bytes();
         for peer in &self.peers {
-            let _ = peer.send(msg.clone());
+            let _ = peer.send_raw(bytes.clone());
         }
     }
 
     /// Send a message to a specific peer by address
     pub fn send_to(&self, addr: SocketAddr, msg: &Message) -> io::Result<()> {
+        let bytes = msg.to_bytes();
         for peer in &self.peers {
             if peer.addr == addr {
-                return peer.send(msg.clone());
+                return peer.send_raw(bytes);
             }
         }
         Err(io::Error::new(io::ErrorKind::NotFound, "peer not found"))
