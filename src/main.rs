@@ -195,6 +195,12 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
             KeyCode::Esc => {
                 if app.is_round_over() {
                     coordinator.go_to_menu();
+                } else if hosted_lobby.is_some() {
+                    // Host can quit mid-game - end the round for all players
+                    if let Some(lobby) = hosted_lobby {
+                        lobby.end_round();
+                    }
+                    coordinator.go_to_menu();
                 }
             }
             KeyCode::Enter => {
