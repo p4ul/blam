@@ -2,21 +2,21 @@
 //! Word validation for BLAM! game
 //!
 //! Validates submitted words against:
-//! - Minimum length (3 characters)
+//! - Minimum length (1 character)
 //! - Letter availability in rack (with multiplicity)
 //! - Dictionary presence
 
 use super::dictionary;
 
 /// Minimum word length for valid submissions
-pub const MIN_WORD_LENGTH: usize = 3;
+pub const MIN_WORD_LENGTH: usize = 1;
 
 /// Result of word validation with specific error messages
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationResult {
     /// Word is valid
     Valid,
-    /// Word is too short (less than 3 characters)
+    /// Word is too short (empty string)
     TooShort { length: usize },
     /// Word uses letters not available in the rack
     InvalidLetters { missing: Vec<char> },
@@ -49,7 +49,7 @@ impl ValidationResult {
 /// Validate a word against the rack and dictionary
 ///
 /// Checks in order:
-/// 1. Length >= 3
+/// 1. Length >= 1
 /// 2. All letters available in rack (with multiplicity)
 /// 3. Word exists in dictionary
 pub fn validate_word(word: &str, rack: &[char]) -> ValidationResult {
@@ -114,18 +114,23 @@ mod tests {
     #[test]
     fn test_too_short() {
         let rack = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
-        assert_eq!(
-            validate_word("ab", &rack),
-            ValidationResult::TooShort { length: 2 }
-        );
-        assert_eq!(
-            validate_word("a", &rack),
-            ValidationResult::TooShort { length: 1 }
-        );
+        // Only empty string is too short now
         assert_eq!(
             validate_word("", &rack),
             ValidationResult::TooShort { length: 0 }
         );
+    }
+
+    #[test]
+    fn test_one_and_two_letter_words() {
+        // 1 and 2 letter words should pass length validation
+        // (may still fail dictionary check)
+        let rack = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+        // "a" and "i" are valid dictionary words
+        assert_eq!(validate_word("a", &rack), ValidationResult::Valid);
+        // "ab" has letters in rack, check it's not rejected as too short
+        let result = validate_word("ab", &rack);
+        assert!(!matches!(result, ValidationResult::TooShort { .. }));
     }
 
     #[test]
@@ -171,17 +176,21 @@ mod tests {
         // Test that validation fails on first check
         let rack = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
 
-        // Too short takes precedence over missing letters
-        let result = validate_word("zz", &rack);
+        // Empty string is too short, takes precedence
+        let result = validate_word("", &rack);
         assert!(matches!(result, ValidationResult::TooShort { .. }));
+
+        // "zz" passes length check but fails letter check
+        let result = validate_word("zz", &rack);
+        assert!(matches!(result, ValidationResult::InvalidLetters { .. }));
     }
 
     #[test]
     fn test_message_format() {
         assert_eq!(ValidationResult::Valid.message(), "Valid word!");
         assert_eq!(
-            ValidationResult::TooShort { length: 2 }.message(),
-            "Too short (2 chars, need 3+)"
+            ValidationResult::TooShort { length: 0 }.message(),
+            "Too short (0 chars, need 1+)"
         );
         assert_eq!(
             ValidationResult::InvalidLetters {

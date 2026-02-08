@@ -319,7 +319,7 @@ impl App {
     pub fn on_claim_rejected(&mut self, word: String, reason: MissReason) {
         let word_upper = word.to_uppercase();
         self.feedback = match &reason {
-            MissReason::TooShort => "Too short (need 3+ letters)".to_string(),
+            MissReason::TooShort => "Too short".to_string(),
             MissReason::InvalidLetters => "CLANK".to_string(),
             MissReason::NotInDictionary => "NOPE".to_string(),
             MissReason::AlreadyClaimed { by } => format!("TOO LATE (already claimed by {})", by),
@@ -573,11 +573,6 @@ mod tests {
         let mut app = App::new();
         app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
 
-        // Too short
-        app.on_char('A');
-        app.on_char('B');
-        app.on_submit();
-
         // Invalid letters (Z not in rack)
         app.on_char('Z');
         app.on_char('A');
@@ -591,8 +586,7 @@ mod tests {
         app.on_submit();
 
         let summary = app.round_summary();
-        assert_eq!(summary.too_short.len(), 1);
-        assert_eq!(summary.too_short[0], "AB");
+        assert_eq!(summary.too_short.len(), 0);
 
         assert_eq!(summary.invalid_letters.len(), 1);
         assert_eq!(summary.invalid_letters[0], "ZAP");

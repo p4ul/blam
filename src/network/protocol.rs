@@ -33,7 +33,7 @@ impl ClaimRejectReason {
                 let letters: String = missing.iter().collect();
                 format!("Missing letters: {}", letters)
             }
-            ClaimRejectReason::TooShort => "Too short (need 3+ letters)".to_string(),
+            ClaimRejectReason::TooShort => "Too short".to_string(),
             ClaimRejectReason::RoundEnded => "Round has ended".to_string(),
         }
     }
@@ -1006,7 +1006,7 @@ mod tests {
         );
         assert_eq!(
             ClaimRejectReason::TooShort.message(),
-            "Too short (need 3+ letters)"
+            "Too short"
         );
         assert_eq!(
             ClaimRejectReason::RoundEnded.message(),
