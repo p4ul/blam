@@ -190,14 +190,14 @@ impl App {
                 });
             }
             ValidationResult::InvalidLetters { .. } => {
-                self.feedback = result.message();
+                self.feedback = "CLANK".to_string();
                 self.missed_words.push(MissedWord {
                     word: word_upper,
                     reason: MissReason::InvalidLetters,
                 });
             }
             ValidationResult::NotInDictionary => {
-                self.feedback = result.message();
+                self.feedback = "NOPE".to_string();
                 self.missed_words.push(MissedWord {
                     word: word_upper,
                     reason: MissReason::NotInDictionary,
@@ -313,9 +313,9 @@ impl App {
         let word_upper = word.to_uppercase();
         self.feedback = match &reason {
             MissReason::TooShort => "Too short (need 3+ letters)".to_string(),
-            MissReason::InvalidLetters => "Missing required letters".to_string(),
-            MissReason::NotInDictionary => "Not in dictionary".to_string(),
-            MissReason::AlreadyClaimed { by } => format!("Already claimed by {}", by),
+            MissReason::InvalidLetters => "CLANK".to_string(),
+            MissReason::NotInDictionary => "NOPE".to_string(),
+            MissReason::AlreadyClaimed { by } => format!("TOO LATE (already claimed by {})", by),
         };
         self.missed_words.push(MissedWord {
             word: word_upper,
@@ -637,5 +637,62 @@ mod tests {
         assert_eq!(MissReason::TooShort.label(), "Too Short");
         assert_eq!(MissReason::InvalidLetters.label(), "Invalid Letters");
         assert_eq!(MissReason::NotInDictionary.label(), "Not In Dictionary");
+    }
+
+    #[test]
+    fn test_claim_feedback_ok() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert_eq!(app.feedback, "OK +3 (CAT)");
+    }
+
+    #[test]
+    fn test_claim_feedback_nope() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'G', 'D', 'O', 'T', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('G');
+        app.on_submit();
+        assert_eq!(app.feedback, "NOPE");
+    }
+
+    #[test]
+    fn test_claim_feedback_clank() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.on_char('Z');
+        app.on_char('A');
+        app.on_char('P');
+        app.on_submit();
+        assert_eq!(app.feedback, "CLANK");
+    }
+
+    #[test]
+    fn test_claim_feedback_too_late() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T'], 60);
+        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".to_string() });
+        assert_eq!(app.feedback, "TOO LATE (already claimed by Bob)");
+    }
+
+    #[test]
+    fn test_multiplayer_claim_feedback_nope() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T'], 60);
+        app.on_claim_rejected("XYZ".to_string(), MissReason::NotInDictionary);
+        assert_eq!(app.feedback, "NOPE");
+    }
+
+    #[test]
+    fn test_multiplayer_claim_feedback_clank() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T'], 60);
+        app.on_claim_rejected("ZAP".to_string(), MissReason::InvalidLetters);
+        assert_eq!(app.feedback, "CLANK");
     }
 }
