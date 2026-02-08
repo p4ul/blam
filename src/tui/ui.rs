@@ -652,6 +652,8 @@ fn render_end_summary(frame: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(1), // Spacer
             Constraint::Length(1), // Words claimed
             Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Longest word
+            Constraint::Length(1), // Spacer
             Constraint::Length(1), // Instructions
             Constraint::Min(0),    // Remaining space
         ])
@@ -677,11 +679,22 @@ fn render_end_summary(frame: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Center);
     frame.render_widget(words, main_layout[4]);
 
+    // Longest word
+    let longest_text = if let Some(longest) = app.longest_claimed_word() {
+        format!("Longest Word: {} ({} letters)", longest.word, longest.word.len())
+    } else {
+        "Longest Word: --".to_string()
+    };
+    let longest = Paragraph::new(longest_text)
+        .style(Style::default().fg(Color::Green))
+        .alignment(Alignment::Center);
+    frame.render_widget(longest, main_layout[6]);
+
     // Instructions
     let instructions = Paragraph::new("Press ESC to return to menu")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(instructions, main_layout[6]);
+    frame.render_widget(instructions, main_layout[8]);
 }
 
 /// Format the letter rack for display

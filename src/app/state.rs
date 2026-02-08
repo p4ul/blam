@@ -348,6 +348,11 @@ impl App {
         &self.claimed_words
     }
 
+    /// Get the longest claimed word this round (by character count)
+    pub fn longest_claimed_word(&self) -> Option<&ClaimedWord> {
+        self.claimed_words.iter().max_by_key(|w| w.word.len())
+    }
+
     /// Get the list of missed words this round
     pub fn missed_words(&self) -> &[MissedWord] {
         &self.missed_words
@@ -525,6 +530,41 @@ mod tests {
         assert_eq!(app.claimed_words().len(), 2);
         assert_eq!(app.claimed_words()[1].word, "CAB");
         assert_eq!(app.claimed_words()[1].points, 3);
+    }
+
+    #[test]
+    fn test_longest_claimed_word() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+
+        // No words claimed yet
+        assert!(app.longest_claimed_word().is_none());
+
+        // Submit "CAT" (3 letters)
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+
+        assert_eq!(app.longest_claimed_word().unwrap().word, "CAT");
+
+        // Submit "CATS" (4 letters) - should become new longest
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_char('S');
+        app.on_submit();
+
+        assert_eq!(app.longest_claimed_word().unwrap().word, "CATS");
+        assert_eq!(app.longest_claimed_word().unwrap().points, 4);
+
+        // Submit "DOG" (3 letters) - shouldn't change longest
+        app.on_char('D');
+        app.on_char('O');
+        app.on_char('G');
+        app.on_submit();
+
+        assert_eq!(app.longest_claimed_word().unwrap().word, "CATS");
     }
 
     #[test]
