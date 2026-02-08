@@ -53,6 +53,9 @@ pub fn render(frame: &mut Frame, coordinator: &AppCoordinator) {
         Screen::Rankings { players, current_handle, scroll_offset } => {
             render_rankings(frame, players, current_handle, *scroll_offset);
         }
+        Screen::Settings { handle_input, editing, feedback, .. } => {
+            render_settings(frame, handle_input, *editing, feedback);
+        }
         Screen::Error { message } => {
             render_error(frame, message);
         }
@@ -550,6 +553,88 @@ fn render_rankings(
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(footer, layout[3]);
+}
+
+/// Render the settings screen
+fn render_settings(frame: &mut Frame, handle_input: &str, _editing: bool, feedback: &str) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // Header
+            Constraint::Length(2),  // Spacer
+            Constraint::Length(1),  // Label
+            Constraint::Length(3),  // Handle input
+            Constraint::Length(1),  // Validation hint
+            Constraint::Length(2),  // Feedback
+            Constraint::Length(2),  // Spacer
+            Constraint::Length(1),  // Instructions
+            Constraint::Min(0),    // Remaining
+            Constraint::Length(2),  // Footer
+        ])
+        .margin(2)
+        .split(area);
+
+    // Header
+    let header = Paragraph::new("Settings")
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(header, layout[0]);
+
+    // Label
+    let label = Paragraph::new("Player Handle")
+        .style(Style::default().fg(Color::White))
+        .alignment(Alignment::Center);
+    frame.render_widget(label, layout[2]);
+
+    // Handle input field
+    let input_display = format!("[{}]_", handle_input);
+    let input = Paragraph::new(input_display)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)),
+        );
+    frame.render_widget(input, layout[3]);
+
+    // Validation hint
+    let chars_left = 12_usize.saturating_sub(handle_input.len());
+    let hint = Paragraph::new(format!(
+        "Letters, numbers, and _ only ({} chars remaining)",
+        chars_left
+    ))
+    .style(Style::default().fg(Color::DarkGray))
+    .alignment(Alignment::Center);
+    frame.render_widget(hint, layout[4]);
+
+    // Feedback
+    if !feedback.is_empty() {
+        let fb_color = if feedback == "Saved!" {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        let fb = Paragraph::new(feedback)
+            .style(Style::default().fg(fb_color).bold())
+            .alignment(Alignment::Center);
+        frame.render_widget(fb, layout[5]);
+    }
+
+    // Instructions
+    let instructions = Paragraph::new("Enter Save  Esc Back")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(instructions, layout[7]);
+
+    // Footer
+    let footer = Paragraph::new("Type to edit your handle")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[9]);
 }
 
 /// Render the header: logo, letter rack, timer

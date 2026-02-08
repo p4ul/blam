@@ -23,6 +23,7 @@ pub enum MenuOption {
     JoinLobby,
     SoloPractice,
     Rankings,
+    Settings,
     Quit,
 }
 
@@ -34,6 +35,7 @@ impl MenuOption {
             MenuOption::JoinLobby,
             MenuOption::SoloPractice,
             MenuOption::Rankings,
+            MenuOption::Settings,
             MenuOption::Quit,
         ]
     }
@@ -45,6 +47,7 @@ impl MenuOption {
             MenuOption::JoinLobby => "Join Lobby",
             MenuOption::SoloPractice => "Solo Practice",
             MenuOption::Rankings => "Rankings",
+            MenuOption::Settings => "Settings",
             MenuOption::Quit => "Quit",
         }
     }
@@ -90,6 +93,13 @@ pub enum Screen {
         current_handle: String,
         scroll_offset: usize,
     },
+    /// Settings page
+    Settings {
+        handle: String,
+        handle_input: String,
+        editing: bool,
+        feedback: String,
+    },
     /// Connection error
     Error {
         message: String,
@@ -113,12 +123,14 @@ impl Default for AppCoordinator {
 impl AppCoordinator {
     /// Create a new app coordinator starting at the menu
     pub fn new() -> Self {
-        // Try to get a default handle from the environment
-        let default_handle = std::env::var("USER")
-            .unwrap_or_else(|_| "Player".to_string())
-            .chars()
-            .take(12)
-            .collect::<String>();
+        // Try to load handle from storage, fall back to env var
+        let default_handle = Self::load_persisted_handle().unwrap_or_else(|| {
+            std::env::var("USER")
+                .unwrap_or_else(|_| "Player".to_string())
+                .chars()
+                .take(12)
+                .collect::<String>()
+        });
 
         Self {
             screen: Screen::Menu {
@@ -128,6 +140,20 @@ impl AppCoordinator {
                 editing_handle: false,
             },
             should_quit: false,
+        }
+    }
+
+    /// Load persisted handle from storage
+    fn load_persisted_handle() -> Option<String> {
+        use crate::storage::Storage;
+        Storage::open().ok()?.handle().ok()?
+    }
+
+    /// Save handle to persistent storage
+    fn persist_handle(handle: &str) {
+        use crate::storage::Storage;
+        if let Ok(storage) = Storage::open() {
+            let _ = storage.set_handle(handle);
         }
     }
 
@@ -156,6 +182,7 @@ impl AppCoordinator {
             Screen::JoinedLobby { lobby, .. } => lobby.player_name.clone(),
             Screen::Playing { .. } => "Player".to_string(),
             Screen::Rankings { current_handle, .. } => current_handle.clone(),
+            Screen::Settings { handle, .. } => handle.clone(),
             Screen::Error { .. } => "Player".to_string(),
         }
     }
@@ -203,6 +230,7 @@ impl AppCoordinator {
                 // Finish editing - save the input
                 if !handle_input.is_empty() {
                     *handle = handle_input.clone();
+                    Self::persist_handle(handle);
                 } else {
                     // Restore previous handle if empty
                     *handle_input = handle.clone();
@@ -276,6 +304,9 @@ impl AppCoordinator {
             MenuOption::Rankings => {
                 self.go_to_rankings(handle);
             }
+            MenuOption::Settings => {
+                self.go_to_settings(handle);
+            }
             MenuOption::Quit => {
                 self.should_quit = true;
             }
@@ -304,6 +335,55 @@ impl AppCoordinator {
             current_handle: handle,
             scroll_offset: 0,
         };
+    }
+
+    /// Navigate to settings screen
+    fn go_to_settings(&mut self, handle: String) {
+        self.screen = Screen::Settings {
+            handle: handle.clone(),
+            handle_input: handle,
+            editing: true,
+            feedback: String::new(),
+        };
+    }
+
+    /// Settings: type a character
+    pub fn settings_char(&mut self, c: char) {
+        if let Screen::Settings { handle_input, editing, feedback, .. } = &mut self.screen {
+            if *editing && handle_input.len() < 12 {
+                handle_input.push(c);
+                *feedback = String::new();
+            }
+        }
+    }
+
+    /// Settings: backspace
+    pub fn settings_backspace(&mut self) {
+        if let Screen::Settings { handle_input, editing, feedback, .. } = &mut self.screen {
+            if *editing {
+                handle_input.pop();
+                *feedback = String::new();
+            }
+        }
+    }
+
+    /// Settings: save the handle
+    pub fn settings_save(&mut self) {
+        if let Screen::Settings { handle, handle_input, feedback, .. } = &mut self.screen {
+            let trimmed = handle_input.trim().to_string();
+            if trimmed.is_empty() {
+                *feedback = "Handle cannot be empty".to_string();
+                return;
+            }
+            if !trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                *feedback = "Only letters, numbers, and _ allowed".to_string();
+                return;
+            }
+            *handle = trimmed.clone();
+            *handle_input = trimmed.clone();
+            Self::persist_handle(&trimmed);
+            *feedback = "Saved!".to_string();
+        }
     }
 
     /// Rankings scroll up
@@ -516,12 +596,13 @@ mod tests {
     #[test]
     fn test_menu_option_all() {
         let options = MenuOption::all();
-        assert_eq!(options.len(), 5);
+        assert_eq!(options.len(), 6);
         assert_eq!(options[0], MenuOption::StartLobby);
         assert_eq!(options[1], MenuOption::JoinLobby);
         assert_eq!(options[2], MenuOption::SoloPractice);
         assert_eq!(options[3], MenuOption::Rankings);
-        assert_eq!(options[4], MenuOption::Quit);
+        assert_eq!(options[4], MenuOption::Settings);
+        assert_eq!(options[5], MenuOption::Quit);
     }
 
     #[test]
@@ -530,6 +611,7 @@ mod tests {
         assert_eq!(MenuOption::JoinLobby.label(), "Join Lobby");
         assert_eq!(MenuOption::SoloPractice.label(), "Solo Practice");
         assert_eq!(MenuOption::Rankings.label(), "Rankings");
+        assert_eq!(MenuOption::Settings.label(), "Settings");
         assert_eq!(MenuOption::Quit.label(), "Quit");
     }
 
@@ -568,22 +650,28 @@ mod tests {
             assert_eq!(*selected, 3);
         }
 
-        // Go down to last (Quit)
+        // Go down to Settings
         app.menu_down();
         if let Screen::Menu { selected, .. } = &app.screen {
             assert_eq!(*selected, 4);
+        }
+
+        // Go down to last (Quit)
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 5);
         }
 
         // Can't go past last
         app.menu_down();
         if let Screen::Menu { selected, .. } = &app.screen {
-            assert_eq!(*selected, 4);
+            assert_eq!(*selected, 5);
         }
 
         // Go back up
         app.menu_up();
         if let Screen::Menu { selected, .. } = &app.screen {
-            assert_eq!(*selected, 3);
+            assert_eq!(*selected, 4);
         }
     }
 
@@ -693,7 +781,8 @@ mod tests {
     fn test_menu_select_quit() {
         let mut app = AppCoordinator::new();
 
-        // Navigate to Quit (index 4)
+        // Navigate to Quit (index 5)
+        app.menu_down();
         app.menu_down();
         app.menu_down();
         app.menu_down();

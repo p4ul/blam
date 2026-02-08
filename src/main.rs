@@ -254,6 +254,15 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
             KeyCode::Down => coordinator.rankings_down(),
             _ => {}
         },
+        Screen::Settings { .. } => match code {
+            KeyCode::Esc => coordinator.go_to_menu(),
+            KeyCode::Enter => coordinator.settings_save(),
+            KeyCode::Backspace => coordinator.settings_backspace(),
+            KeyCode::Char(c) if c.is_ascii_alphanumeric() || c == '_' => {
+                coordinator.settings_char(c)
+            }
+            _ => {}
+        },
         Screen::Error { .. } => match code {
             KeyCode::Esc => coordinator.go_to_menu(),
             KeyCode::Enter => coordinator.go_to_menu(),
