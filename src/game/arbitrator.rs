@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Claim arbitration for multiplayer games
 //!
 //! The host runs the arbitrator to validate claims and ensure only

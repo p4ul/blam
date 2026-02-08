@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Lobby management for multiplayer games
 //!
 //! Handles:

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! CRDT sync logic for exchanging events between peers.
 //!
 //! Implements a simple grow-only set merge:

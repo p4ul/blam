@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Game logic: rounds, scoring, letter racks, word validation
 
 pub mod arbitrator;

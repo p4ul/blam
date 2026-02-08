@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! UI rendering using ratatui
 //!
 //! Supports multiple screens:

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! TCP client for joining games
 
 use super::peer::Peer;

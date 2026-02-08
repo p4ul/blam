@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Dictionary module for word validation
 //!
 //! Embeds SCOWL American size-60 wordlist at build time.

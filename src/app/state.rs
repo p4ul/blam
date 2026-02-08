@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Application state management
 
 use crate::game::validation::{validate_word, ValidationResult};

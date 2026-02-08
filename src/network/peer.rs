@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Peer connection handling
 
 use super::protocol::Message;

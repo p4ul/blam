@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Network protocol message types
 //!
 //! Simple length-prefixed JSON messages over TCP.

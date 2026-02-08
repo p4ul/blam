@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Statistics and Elo rating system
 //!
 //! This module provides:

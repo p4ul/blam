@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Word validation for BLAM! game
 //!
 //! Validates submitted words against:

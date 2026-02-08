@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! TCP server for hosting games
 
 use super::peer::Peer;

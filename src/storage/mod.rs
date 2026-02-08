@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 //! Persistent storage using SQLite (rusqlite)
 //!
 //! This module provides:
