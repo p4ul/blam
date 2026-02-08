@@ -248,6 +248,12 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
             }
             _ => {}
         },
+        Screen::Rankings { .. } => match code {
+            KeyCode::Esc => coordinator.go_to_menu(),
+            KeyCode::Up => coordinator.rankings_up(),
+            KeyCode::Down => coordinator.rankings_down(),
+            _ => {}
+        },
         Screen::Error { .. } => match code {
             KeyCode::Esc => coordinator.go_to_menu(),
             KeyCode::Enter => coordinator.go_to_menu(),

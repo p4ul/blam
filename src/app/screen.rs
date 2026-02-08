@@ -12,6 +12,7 @@
 use crate::game::LetterRack;
 use crate::lobby::{HostedLobby, JoinedLobby, LobbyBrowser, LobbyEvent};
 use crate::network::{ClaimRejectReason, PeerInfo};
+use crate::storage::CachedPlayerStats;
 
 use super::state::{App, DEFAULT_ROUND_DURATION};
 
@@ -21,6 +22,7 @@ pub enum MenuOption {
     StartLobby,
     JoinLobby,
     SoloPractice,
+    Rankings,
     Quit,
 }
 
@@ -31,6 +33,7 @@ impl MenuOption {
             MenuOption::StartLobby,
             MenuOption::JoinLobby,
             MenuOption::SoloPractice,
+            MenuOption::Rankings,
             MenuOption::Quit,
         ]
     }
@@ -41,6 +44,7 @@ impl MenuOption {
             MenuOption::StartLobby => "Start Lobby",
             MenuOption::JoinLobby => "Join Lobby",
             MenuOption::SoloPractice => "Solo Practice",
+            MenuOption::Rankings => "Rankings",
             MenuOption::Quit => "Quit",
         }
     }
@@ -79,6 +83,12 @@ pub enum Screen {
         is_host: bool,
         hosted_lobby: Option<HostedLobby>,
         joined_lobby: Option<JoinedLobby>,
+    },
+    /// Rankings leaderboard
+    Rankings {
+        players: Vec<CachedPlayerStats>,
+        current_handle: String,
+        scroll_offset: usize,
     },
     /// Connection error
     Error {
@@ -145,6 +155,7 @@ impl AppCoordinator {
             Screen::HostLobby { lobby, .. } => lobby.host_name.clone(),
             Screen::JoinedLobby { lobby, .. } => lobby.player_name.clone(),
             Screen::Playing { .. } => "Player".to_string(),
+            Screen::Rankings { current_handle, .. } => current_handle.clone(),
             Screen::Error { .. } => "Player".to_string(),
         }
     }
@@ -262,8 +273,51 @@ impl AppCoordinator {
                     joined_lobby: None,
                 };
             }
+            MenuOption::Rankings => {
+                self.go_to_rankings(handle);
+            }
             MenuOption::Quit => {
                 self.should_quit = true;
+            }
+        }
+    }
+
+    /// Navigate to rankings screen
+    fn go_to_rankings(&mut self, handle: String) {
+        use crate::storage::Storage;
+
+        let mut players = Vec::new();
+        if let Ok(storage) = Storage::open() {
+            // Rebuild caches if needed
+            let _ = storage.rebuild_derived_caches();
+            if let Ok(leaderboard) = storage.get_cached_leaderboard() {
+                for (player_handle, _elo) in &leaderboard {
+                    if let Ok(Some(stats)) = storage.get_cached_stats(player_handle) {
+                        players.push(stats);
+                    }
+                }
+            }
+        }
+
+        self.screen = Screen::Rankings {
+            players,
+            current_handle: handle,
+            scroll_offset: 0,
+        };
+    }
+
+    /// Rankings scroll up
+    pub fn rankings_up(&mut self) {
+        if let Screen::Rankings { scroll_offset, .. } = &mut self.screen {
+            *scroll_offset = scroll_offset.saturating_sub(1);
+        }
+    }
+
+    /// Rankings scroll down
+    pub fn rankings_down(&mut self) {
+        if let Screen::Rankings { scroll_offset, players, .. } = &mut self.screen {
+            if *scroll_offset < players.len().saturating_sub(1) {
+                *scroll_offset += 1;
             }
         }
     }
@@ -462,11 +516,12 @@ mod tests {
     #[test]
     fn test_menu_option_all() {
         let options = MenuOption::all();
-        assert_eq!(options.len(), 4);
+        assert_eq!(options.len(), 5);
         assert_eq!(options[0], MenuOption::StartLobby);
         assert_eq!(options[1], MenuOption::JoinLobby);
         assert_eq!(options[2], MenuOption::SoloPractice);
-        assert_eq!(options[3], MenuOption::Quit);
+        assert_eq!(options[3], MenuOption::Rankings);
+        assert_eq!(options[4], MenuOption::Quit);
     }
 
     #[test]
@@ -474,6 +529,7 @@ mod tests {
         assert_eq!(MenuOption::StartLobby.label(), "Start Lobby");
         assert_eq!(MenuOption::JoinLobby.label(), "Join Lobby");
         assert_eq!(MenuOption::SoloPractice.label(), "Solo Practice");
+        assert_eq!(MenuOption::Rankings.label(), "Rankings");
         assert_eq!(MenuOption::Quit.label(), "Quit");
     }
 
@@ -506,22 +562,28 @@ mod tests {
             assert_eq!(*selected, 2);
         }
 
-        // Go down to last
+        // Go down to Rankings
         app.menu_down();
         if let Screen::Menu { selected, .. } = &app.screen {
             assert_eq!(*selected, 3);
+        }
+
+        // Go down to last (Quit)
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 4);
         }
 
         // Can't go past last
         app.menu_down();
         if let Screen::Menu { selected, .. } = &app.screen {
-            assert_eq!(*selected, 3);
+            assert_eq!(*selected, 4);
         }
 
         // Go back up
         app.menu_up();
         if let Screen::Menu { selected, .. } = &app.screen {
-            assert_eq!(*selected, 2);
+            assert_eq!(*selected, 3);
         }
     }
 
@@ -631,7 +693,8 @@ mod tests {
     fn test_menu_select_quit() {
         let mut app = AppCoordinator::new();
 
-        // Navigate to Quit (index 3)
+        // Navigate to Quit (index 4)
+        app.menu_down();
         app.menu_down();
         app.menu_down();
         app.menu_down();
