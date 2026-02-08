@@ -314,4 +314,103 @@ mod tests {
         assert_eq!(inserted, 2);
         assert_eq!(storage_b.event_count().unwrap(), 7);
     }
+
+    #[test]
+    fn test_hex_to_bytes_invalid() {
+        // Wrong length
+        assert!(hex_to_bytes("0123").is_none());
+        assert!(hex_to_bytes("").is_none());
+
+        // Invalid hex chars
+        assert!(hex_to_bytes("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz").is_none());
+    }
+
+    #[test]
+    fn test_sync_to_events_filters_invalid() {
+        let sync_events = vec![
+            SyncEvent {
+                actor_id: "bad_hex".to_string(), // Invalid - not 32 chars
+                seq: 1,
+                event_type: "test".to_string(),
+                payload: "{}".to_string(),
+                created_at: 1000,
+            },
+            SyncEvent {
+                actor_id: "0123456789abcdef0123456789abcdef".to_string(), // Valid
+                seq: 2,
+                event_type: "test".to_string(),
+                payload: "{}".to_string(),
+                created_at: 2000,
+            },
+        ];
+
+        let events = sync_to_events(sync_events);
+        assert_eq!(events.len(), 1); // Only valid one survives
+        assert_eq!(events[0].seq, 2);
+    }
+
+    #[test]
+    fn test_sync_empty_storages() {
+        let storage_a = Storage::open_in_memory().unwrap();
+        let storage_b = Storage::open_in_memory().unwrap();
+
+        // Both empty - sync should produce empty results
+        let request = create_sync_request(&storage_a).unwrap();
+        let clock = match &request {
+            Message::SyncRequest { vector_clock } => vector_clock.clone(),
+            _ => panic!(),
+        };
+
+        let response = process_sync_request(&storage_b, &clock).unwrap();
+        let events = match response {
+            Message::SyncEvents { events } => events,
+            _ => panic!(),
+        };
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn test_three_way_sync() {
+        let storage_a = Storage::open_in_memory().unwrap();
+        let storage_b = Storage::open_in_memory().unwrap();
+        let storage_c = Storage::open_in_memory().unwrap();
+
+        // Each peer creates unique events
+        storage_a.append_event("a_event", "{}").unwrap();
+        storage_b.append_event("b_event", "{}").unwrap();
+        storage_c.append_event("c_event", "{}").unwrap();
+
+        // A syncs with B (bidirectional)
+        let req = create_sync_request(&storage_a).unwrap();
+        let clock = match &req { Message::SyncRequest { vector_clock } => vector_clock.clone(), _ => panic!() };
+        let resp = process_sync_request(&storage_b, &clock).unwrap();
+        let evts = match resp { Message::SyncEvents { events } => events, _ => panic!() };
+        process_sync_events(&storage_a, evts).unwrap();
+
+        let req = create_sync_request(&storage_b).unwrap();
+        let clock = match &req { Message::SyncRequest { vector_clock } => vector_clock.clone(), _ => panic!() };
+        let resp = process_sync_request(&storage_a, &clock).unwrap();
+        let evts = match resp { Message::SyncEvents { events } => events, _ => panic!() };
+        process_sync_events(&storage_b, evts).unwrap();
+
+        // A now has A + B events
+        assert_eq!(storage_a.event_count().unwrap(), 2);
+
+        // A syncs with C (bidirectional)
+        let req = create_sync_request(&storage_a).unwrap();
+        let clock = match &req { Message::SyncRequest { vector_clock } => vector_clock.clone(), _ => panic!() };
+        let resp = process_sync_request(&storage_c, &clock).unwrap();
+        let evts = match resp { Message::SyncEvents { events } => events, _ => panic!() };
+        process_sync_events(&storage_a, evts).unwrap();
+
+        let req = create_sync_request(&storage_c).unwrap();
+        let clock = match &req { Message::SyncRequest { vector_clock } => vector_clock.clone(), _ => panic!() };
+        let resp = process_sync_request(&storage_a, &clock).unwrap();
+        let evts = match resp { Message::SyncEvents { events } => events, _ => panic!() };
+        process_sync_events(&storage_c, evts).unwrap();
+
+        // A and C should both have all 3 events
+        assert_eq!(storage_a.event_count().unwrap(), 3);
+        assert_eq!(storage_c.event_count().unwrap(), 3);
+    }
 }

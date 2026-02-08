@@ -749,4 +749,216 @@ mod tests {
         assert_eq!(b_stats.total_points, 90);
         assert_eq!(b_stats.wins, 1);
     }
+
+    #[test]
+    fn test_elo_zero_sum_two_players() {
+        // Elo changes should sum to zero for equal-rated players
+        let mut calc = EloCalculator::new();
+        let result = MatchResult::new(
+            1,
+            vec![("A".to_string(), 50), ("B".to_string(), 30)],
+            "h".to_string(),
+        );
+        calc.process_match(&result);
+
+        let total_change = (calc.rating("A") - DEFAULT_ELO) + (calc.rating("B") - DEFAULT_ELO);
+        assert!(total_change.abs() < 0.001, "Two-player Elo should be zero-sum, got {}", total_change);
+    }
+
+    #[test]
+    fn test_elo_zero_sum_four_players() {
+        // Total Elo change across all players should sum to zero
+        let mut calc = EloCalculator::new();
+        let result = MatchResult::new(
+            1,
+            vec![
+                ("A".to_string(), 50),
+                ("B".to_string(), 40),
+                ("C".to_string(), 30),
+                ("D".to_string(), 20),
+            ],
+            "h".to_string(),
+        );
+        calc.process_match(&result);
+
+        let total: f64 = ["A", "B", "C", "D"]
+            .iter()
+            .map(|p| calc.rating(p) - DEFAULT_ELO)
+            .sum();
+        assert!(total.abs() < 0.001, "Multi-player Elo should be zero-sum, got {}", total);
+    }
+
+    #[test]
+    fn test_incomplete_match_ignored() {
+        let mut calc = EloCalculator::new();
+        let mut result = MatchResult::new(
+            1,
+            vec![("A".to_string(), 50), ("B".to_string(), 30)],
+            "h".to_string(),
+        );
+        result.completed = false;
+        calc.process_match(&result);
+
+        assert!((calc.rating("A") - DEFAULT_ELO).abs() < 0.001);
+        assert!((calc.rating("B") - DEFAULT_ELO).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_elo_upset_bonus() {
+        // Lower-rated player beating higher-rated player should gain more
+        let mut calc = EloCalculator::new();
+
+        // First: A beats B (both start at 1200)
+        calc.process_match(&MatchResult::new(
+            1,
+            vec![("A".to_string(), 50), ("B".to_string(), 30)],
+            "h".to_string(),
+        ));
+        let a_after_first = calc.rating("A");
+        let b_after_first = calc.rating("B");
+        assert!(a_after_first > b_after_first);
+
+        // Second: B (now lower-rated) beats A (now higher-rated)
+        let b_before = calc.rating("B");
+        calc.process_match(&MatchResult::new(
+            2,
+            vec![("A".to_string(), 20), ("B".to_string(), 50)],
+            "h".to_string(),
+        ));
+        let b_gain = calc.rating("B") - b_before;
+
+        // B should gain more than the initial 16 (because they're the underdog)
+        let a_gain_first = a_after_first - DEFAULT_ELO;
+        assert!(b_gain > a_gain_first, "Underdog win should gain more: {} vs {}", b_gain, a_gain_first);
+    }
+
+    #[test]
+    fn test_elo_custom_k_factor() {
+        let mut calc_low_k = EloCalculator::with_k_factor(16.0);
+        let mut calc_high_k = EloCalculator::with_k_factor(64.0);
+
+        let result = MatchResult::new(
+            1,
+            vec![("A".to_string(), 50), ("B".to_string(), 30)],
+            "h".to_string(),
+        );
+        calc_low_k.process_match(&result);
+        calc_high_k.process_match(&result);
+
+        let low_k_change = (calc_low_k.rating("A") - DEFAULT_ELO).abs();
+        let high_k_change = (calc_high_k.rating("A") - DEFAULT_ELO).abs();
+        assert!(high_k_change > low_k_change, "Higher K should produce larger changes");
+    }
+
+    #[test]
+    fn test_match_result_json_special_chars() {
+        let result = MatchResult::new(
+            1,
+            vec![("O'Brien".to_string(), 50), ("Dr. \"Evil\"".to_string(), 30)],
+            "host-actor\"123".to_string(),
+        );
+        let json = result.to_json();
+        let parsed = MatchResult::from_json(&json).unwrap();
+        assert_eq!(result.match_id, parsed.match_id);
+        assert_eq!(result.host_actor_id, parsed.host_actor_id);
+    }
+
+    #[test]
+    fn test_match_result_player_count() {
+        let single = MatchResult::new(1, vec![("A".to_string(), 50)], "h".to_string());
+        assert_eq!(single.player_count(), 1);
+        assert!(!single.is_multiplayer());
+
+        let multi = MatchResult::new(1, vec![("A".to_string(), 50), ("B".to_string(), 30)], "h".to_string());
+        assert_eq!(multi.player_count(), 2);
+        assert!(multi.is_multiplayer());
+    }
+
+    #[test]
+    fn test_player_stats_zero_rounds() {
+        let stats = PlayerStats::new("Alice".to_string());
+        assert_eq!(stats.average_score(), 0.0);
+        assert_eq!(stats.elo, DEFAULT_ELO);
+        assert_eq!(stats.rounds_played, 0);
+    }
+
+    #[test]
+    fn test_stats_tracker_solo_match_no_wins() {
+        let mut tracker = StatsTracker::new();
+        let result = MatchResult::new(
+            1,
+            vec![("Alice".to_string(), 50)],
+            "h".to_string(),
+        );
+        tracker.process_match(&result);
+
+        let alice = tracker.get("Alice").unwrap();
+        assert_eq!(alice.rounds_played, 1);
+        assert_eq!(alice.total_points, 50);
+        // Solo match: no wins counted
+        assert_eq!(alice.wins, 0);
+        // Solo match: Elo unchanged
+        assert!((alice.elo - DEFAULT_ELO).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_stats_tracker_multiple_matches() {
+        let mut tracker = StatsTracker::new();
+
+        // Match 1: Alice wins
+        tracker.process_match(&MatchResult::new(
+            1, vec![("Alice".to_string(), 50), ("Bob".to_string(), 30)], "h".to_string(),
+        ));
+        // Match 2: Bob wins
+        tracker.process_match(&MatchResult::new(
+            2, vec![("Alice".to_string(), 20), ("Bob".to_string(), 60)], "h".to_string(),
+        ));
+        // Match 3: Tie
+        tracker.process_match(&MatchResult::new(
+            3, vec![("Alice".to_string(), 40), ("Bob".to_string(), 40)], "h".to_string(),
+        ));
+
+        let alice = tracker.get("Alice").unwrap();
+        assert_eq!(alice.rounds_played, 3);
+        assert_eq!(alice.total_points, 110);
+        assert_eq!(alice.best_score, 50);
+        assert_eq!(alice.wins, 2); // Won match 1, tied match 3 (both get a win for max score)
+
+        let bob = tracker.get("Bob").unwrap();
+        assert_eq!(bob.rounds_played, 3);
+        assert_eq!(bob.total_points, 130);
+        assert_eq!(bob.best_score, 60);
+    }
+
+    #[test]
+    fn test_leaderboard_default_calculator() {
+        let calc = EloCalculator::default();
+        assert!(calc.leaderboard().is_empty());
+        assert!(calc.all_ratings().is_empty());
+    }
+
+    #[test]
+    fn test_rebuild_clears_previous() {
+        let mut tracker = StatsTracker::new();
+
+        // First set of matches
+        tracker.process_match(&MatchResult::new(
+            1, vec![("A".to_string(), 50), ("B".to_string(), 30)], "h".to_string(),
+        ));
+        assert_eq!(tracker.get("A").unwrap().rounds_played, 1);
+
+        // Rebuild from different matches
+        let mut new_matches = vec![
+            MatchResult::new(10, vec![("X".to_string(), 50), ("Y".to_string(), 30)], "h".to_string()),
+        ];
+        tracker.rebuild_from_matches(&mut new_matches);
+
+        // Old players should be gone
+        assert!(tracker.get("A").is_none());
+        assert!(tracker.get("B").is_none());
+
+        // New players should be present
+        assert_eq!(tracker.get("X").unwrap().rounds_played, 1);
+        assert_eq!(tracker.get("Y").unwrap().rounds_played, 1);
+    }
 }

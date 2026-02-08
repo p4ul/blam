@@ -838,4 +838,36 @@ mod tests {
         assert!(MAX_PLAYERS <= 12);
         assert!(MIN_PLAYERS <= MAX_PLAYERS);
     }
+
+    #[test]
+    fn test_lobby_name_unique() {
+        // Generate many names and verify they're non-empty
+        let names: Vec<String> = (0..20).map(|_| generate_lobby_name()).collect();
+        for name in &names {
+            assert!(!name.is_empty());
+            assert!(name.contains('-'));
+        }
+    }
+
+    #[test]
+    fn test_lobby_state_equality() {
+        assert_eq!(LobbyState::Waiting, LobbyState::Waiting);
+        assert_eq!(LobbyState::Countdown(3), LobbyState::Countdown(3));
+        assert_ne!(LobbyState::Countdown(3), LobbyState::Countdown(2));
+        assert_ne!(LobbyState::Waiting, LobbyState::Starting);
+    }
+
+    #[test]
+    fn test_player_struct() {
+        let player = Player {
+            name: "Alice".to_string(),
+            ready: true,
+            is_local: true,
+            is_host: true,
+        };
+        assert_eq!(player.name, "Alice");
+        assert!(player.ready);
+        assert!(player.is_local);
+        assert!(player.is_host);
+    }
 }

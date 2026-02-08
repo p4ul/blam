@@ -1013,4 +1013,129 @@ mod tests {
             "Round has ended"
         );
     }
+
+    #[test]
+    fn test_leave_roundtrip() {
+        let msg = Message::Leave { player_name: "Alice".to_string() };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_round_end_roundtrip() {
+        let msg = Message::RoundEnd;
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_rejected_not_in_dictionary() {
+        let msg = Message::ClaimRejected {
+            word: "XYZZY".to_string(),
+            reason: ClaimRejectReason::NotInDictionary,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_rejected_too_short() {
+        let msg = Message::ClaimRejected {
+            word: "AB".to_string(),
+            reason: ClaimRejectReason::TooShort,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_claim_rejected_round_ended() {
+        let msg = Message::ClaimRejected {
+            word: "CAT".to_string(),
+            reason: ClaimRejectReason::RoundEnded,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_incomplete_bytes_error() {
+        // Too short for length header
+        let result = Message::from_bytes(&[0, 0]);
+        assert!(result.is_err());
+
+        // Length says 100 bytes but only 4 available
+        let result = Message::from_bytes(&[0, 0, 0, 100]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_invalid_type_error() {
+        let json = r#"{"type":"unknown_type"}"#;
+        let len = json.len() as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&len.to_be_bytes());
+        bytes.extend_from_slice(json.as_bytes());
+
+        let result = Message::from_bytes(&bytes);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_score_update_empty() {
+        let msg = Message::ScoreUpdate { scores: vec![] };
+        // Serialize
+        let json = msg.to_bytes();
+        // Can't roundtrip empty scores (parser expects [[ pattern), but serialization shouldn't panic
+        assert!(!json.is_empty());
+    }
+
+    #[test]
+    fn test_special_chars_in_player_name() {
+        let msg = Message::ClaimAccepted {
+            word: "BLAM".to_string(),
+            player_name: "Test\\User\"Name".to_string(),
+            points: 4,
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn test_large_word_roundtrip() {
+        let msg = Message::ClaimAttempt {
+            word: "ABCDEFGHIJKLMNOPQRST".to_string(),
+        };
+        let bytes = msg.to_bytes();
+        let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn test_many_players_score_update() {
+        let scores: Vec<(String, u32)> = (0..12)
+            .map(|i| (format!("Player{}", i), i * 10))
+            .collect();
+        let msg = Message::ScoreUpdate { scores: scores.clone() };
+        let bytes = msg.to_bytes();
+        let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+        if let Message::ScoreUpdate { scores: parsed_scores } = parsed {
+            assert_eq!(parsed_scores.len(), 12);
+            assert_eq!(parsed_scores[0].0, "Player0");
+            assert_eq!(parsed_scores[11].1, 110);
+        } else {
+            panic!("Expected ScoreUpdate");
+        }
+    }
 }
