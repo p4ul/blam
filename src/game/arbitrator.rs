@@ -191,8 +191,8 @@ mod tests {
     fn test_invalid_word_rejected() {
         let mut arb = RoundArbitrator::new(test_letters(), &test_players());
 
-        // Word too short
-        let result = arb.try_claim("at", "Alice");
+        // Empty word is too short
+        let result = arb.try_claim("", "Alice");
         assert!(matches!(result, ClaimResult::TooShort));
 
         // Word with missing letters
