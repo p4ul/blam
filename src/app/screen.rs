@@ -10,7 +10,7 @@
 
 use crate::game::LetterRack;
 use crate::lobby::{HostedLobby, JoinedLobby, LobbyBrowser, LobbyEvent, Player};
-use crate::network::PeerInfo;
+use crate::network::{ClaimRejectReason, PeerInfo};
 
 use super::state::{App, DEFAULT_ROUND_DURATION};
 
@@ -77,6 +77,7 @@ pub enum Screen {
         app: App,
         is_host: bool,
         hosted_lobby: Option<HostedLobby>,
+        joined_lobby: Option<JoinedLobby>,
     },
     /// Connection error
     Error {
@@ -257,6 +258,7 @@ impl AppCoordinator {
                     app,
                     is_host: true,
                     hosted_lobby: None,
+                    joined_lobby: None,
                 };
             }
             MenuOption::Quit => {
@@ -330,10 +332,10 @@ impl AppCoordinator {
             }
             Screen::HostLobby { lobby, .. } => {
                 let _events = lobby.poll();
-                // Events are handled - player list is updated internally
             }
             Screen::JoinedLobby { lobby, countdown } => {
                 let events = lobby.poll();
+                let mut transition = None;
                 for event in events {
                     match event {
                         LobbyEvent::Countdown {
@@ -344,14 +346,8 @@ impl AppCoordinator {
                             *countdown = Some((count, letters, duration));
                         }
                         LobbyEvent::RoundStart { letters, duration } => {
-                            let mut app = App::new();
-                            app.start_round(letters, duration);
-                            self.screen = Screen::Playing {
-                                app,
-                                is_host: false,
-                                hosted_lobby: None,
-                            };
-                            return;
+                            transition = Some((letters, duration));
+                            break;
                         }
                         LobbyEvent::Disconnected => {
                             self.screen = Screen::Error {
@@ -362,8 +358,98 @@ impl AppCoordinator {
                         _ => {}
                     }
                 }
+                if let Some((letters, duration)) = transition {
+                    // Take ownership of the JoinedLobby by replacing the screen
+                    let old_screen = std::mem::replace(
+                        &mut self.screen,
+                        Screen::Error {
+                            message: String::new(),
+                        },
+                    );
+                    if let Screen::JoinedLobby { lobby, .. } = old_screen {
+                        let player_names: Vec<String> =
+                            lobby.players().iter().map(|p| p.name.clone()).collect();
+                        let player_name = lobby.player_name.clone();
+
+                        let mut app = App::new();
+                        app.set_player_name(player_name);
+                        app.set_scoreboard(player_names);
+                        app.start_round(letters, duration);
+
+                        self.screen = Screen::Playing {
+                            app,
+                            is_host: false,
+                            hosted_lobby: None,
+                            joined_lobby: Some(lobby),
+                        };
+                    }
+                }
+            }
+            Screen::Playing {
+                app,
+                hosted_lobby,
+                joined_lobby,
+                ..
+            } => {
+                // Process multiplayer events during gameplay
+                Self::poll_multiplayer_events(app, hosted_lobby, joined_lobby);
             }
             _ => {}
+        }
+    }
+
+    /// Process multiplayer events during gameplay
+    fn poll_multiplayer_events(
+        app: &mut App,
+        hosted_lobby: &mut Option<HostedLobby>,
+        joined_lobby: &mut Option<JoinedLobby>,
+    ) {
+        let events: Vec<LobbyEvent> = if let Some(lobby) = hosted_lobby {
+            lobby.poll()
+        } else if let Some(lobby) = joined_lobby {
+            lobby.poll()
+        } else {
+            return;
+        };
+
+        for event in events {
+            match event {
+                LobbyEvent::ClaimAccepted {
+                    word,
+                    player_name,
+                    points,
+                } => {
+                    app.on_claim_accepted(word, player_name, points);
+                }
+                LobbyEvent::ClaimRejected { word, reason } => {
+                    app.on_claim_rejected(word, Self::map_reject_reason(reason));
+                }
+                LobbyEvent::ScoreUpdate { scores } => {
+                    app.update_scoreboard(scores);
+                }
+                LobbyEvent::RoundEnd => {
+                    app.force_end_round();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Convert network ClaimRejectReason to app MissReason (public for main.rs)
+    pub fn map_reject_reason_pub(reason: ClaimRejectReason) -> super::state::MissReason {
+        Self::map_reject_reason(reason)
+    }
+
+    /// Convert network ClaimRejectReason to app MissReason
+    fn map_reject_reason(reason: ClaimRejectReason) -> super::state::MissReason {
+        match reason {
+            ClaimRejectReason::TooShort => super::state::MissReason::TooShort,
+            ClaimRejectReason::InvalidLetters { .. } => super::state::MissReason::InvalidLetters,
+            ClaimRejectReason::NotInDictionary => super::state::MissReason::NotInDictionary,
+            ClaimRejectReason::AlreadyClaimed { by } => {
+                super::state::MissReason::AlreadyClaimed { by }
+            }
+            ClaimRejectReason::RoundEnded => super::state::MissReason::TooShort, // round ended is effectively a rejection
         }
     }
 }

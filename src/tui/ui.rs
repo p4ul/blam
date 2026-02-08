@@ -617,6 +617,30 @@ fn render_claim_feed(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Render the end-of-round summary
 fn render_end_of_round(frame: &mut Frame, area: Rect, app: &App) {
+    let has_scoreboard = !app.scoreboard.is_empty();
+
+    if has_scoreboard {
+        // Multiplayer end-of-round: show scoreboard alongside summary
+        let horizontal_layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Min(30),    // Summary area
+                Constraint::Length(22), // Final scoreboard
+                Constraint::Length(25), // Claim feed
+            ])
+            .split(area);
+
+        render_end_summary(frame, horizontal_layout[0], app);
+        render_scoreboard(frame, horizontal_layout[1], app);
+        render_claim_feed(frame, horizontal_layout[2], app);
+    } else {
+        // Solo end-of-round
+        render_end_summary(frame, area, app);
+    }
+}
+
+/// Render the end-of-round summary text
+fn render_end_summary(frame: &mut Frame, area: Rect, app: &App) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .margin(1)
@@ -625,13 +649,15 @@ fn render_end_of_round(frame: &mut Frame, area: Rect, app: &App) {
             Constraint::Length(1), // Spacer
             Constraint::Length(1), // Final score
             Constraint::Length(1), // Spacer
+            Constraint::Length(1), // Words claimed
+            Constraint::Length(1), // Spacer
             Constraint::Length(1), // Instructions
             Constraint::Min(0),    // Remaining space
         ])
         .split(area);
 
     // TIME'S UP title
-    let title = Paragraph::new("⏱  TIME'S UP!")
+    let title = Paragraph::new("TIME'S UP!")
         .style(Style::default().fg(Color::Red).bold())
         .alignment(Alignment::Center);
     frame.render_widget(title, main_layout[0]);
@@ -643,11 +669,18 @@ fn render_end_of_round(frame: &mut Frame, area: Rect, app: &App) {
         .alignment(Alignment::Center);
     frame.render_widget(score, main_layout[2]);
 
+    // Words claimed count
+    let words_text = format!("Words Claimed: {}", app.claimed_words().len());
+    let words = Paragraph::new(words_text)
+        .style(Style::default().fg(Color::Cyan))
+        .alignment(Alignment::Center);
+    frame.render_widget(words, main_layout[4]);
+
     // Instructions
     let instructions = Paragraph::new("Press ESC to return to menu")
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
-    frame.render_widget(instructions, main_layout[4]);
+    frame.render_widget(instructions, main_layout[6]);
 }
 
 /// Format the letter rack for display
