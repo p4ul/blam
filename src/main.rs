@@ -2,12 +2,19 @@
 //!
 //! Type fast. Claim first. Keep the crown.
 
+#[allow(dead_code)]
 mod app;
+#[allow(dead_code)]
 mod game;
+#[allow(dead_code)]
 mod lobby;
+#[allow(dead_code)]
 mod network;
+#[allow(dead_code)]
 mod stats;
+#[allow(dead_code)]
 mod storage;
+#[allow(dead_code)]
 mod tui;
 
 use app::{AppCoordinator, Screen, DEFAULT_ROUND_DURATION};

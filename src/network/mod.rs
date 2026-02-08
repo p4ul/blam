@@ -11,10 +11,9 @@ pub mod peer;
 pub mod protocol;
 pub mod server;
 
-pub use client::{parse_address, Client};
-pub use peer::Peer;
+pub use client::Client;
 pub use protocol::{ClaimRejectReason, Message};
-pub use server::{Server, ServerEvent, DEFAULT_PORT};
+pub use server::{Server, ServerEvent};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::collections::HashMap;

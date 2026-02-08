@@ -9,7 +9,7 @@
 //! - End of round results
 
 use crate::game::LetterRack;
-use crate::lobby::{HostedLobby, JoinedLobby, LobbyBrowser, LobbyEvent, Player};
+use crate::lobby::{HostedLobby, JoinedLobby, LobbyBrowser, LobbyEvent};
 use crate::network::{ClaimRejectReason, PeerInfo};
 
 use super::state::{App, DEFAULT_ROUND_DURATION};
@@ -202,7 +202,7 @@ impl AppCoordinator {
 
     /// Handle menu selection (Enter)
     pub fn menu_select(&mut self) {
-        let (selected, handle, editing_handle) = match &self.screen {
+        let (selected, handle, _editing_handle) = match &self.screen {
             Screen::Menu { selected, handle, editing_handle, handle_input, .. } => {
                 if *editing_handle {
                     // Just finish editing
@@ -269,7 +269,7 @@ impl AppCoordinator {
 
     /// Browser navigation (up)
     pub fn browser_up(&mut self) {
-        if let Screen::Browser { selected, lobbies, .. } = &mut self.screen {
+        if let Screen::Browser { selected, lobbies: _, .. } = &mut self.screen {
             if *selected > 0 {
                 *selected -= 1;
             }
