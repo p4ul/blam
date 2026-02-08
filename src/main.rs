@@ -14,6 +14,7 @@ use app::{AppCoordinator, Screen, DEFAULT_ROUND_DURATION};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use game::LetterRack;
 use std::io;
+use std::mem;
 use std::time::{Duration, Instant};
 use tui::Tui;
 
@@ -57,13 +58,14 @@ fn main() -> io::Result<()> {
 
         // Handle second-based timer for game play and countdown
         if last_second.elapsed() >= Duration::from_secs(1) {
+            let mut host_round_start = None;
+
             match &mut coordinator.screen {
                 Screen::Playing { app, .. } => {
                     app.tick();
                 }
                 Screen::HostLobby { lobby, countdown } => {
                     if countdown.is_some() {
-                        // Tick the countdown
                         if let Some(event) = lobby.tick_countdown() {
                             match event {
                                 lobby::LobbyEvent::Countdown {
@@ -72,14 +74,7 @@ fn main() -> io::Result<()> {
                                     *countdown = Some(count);
                                 }
                                 lobby::LobbyEvent::RoundStart { letters, duration } => {
-                                    // Countdown finished - transition to playing
-                                    let mut app = app::App::new();
-                                    app.start_round(letters, duration);
-                                    coordinator.screen = Screen::Playing {
-                                        app,
-                                        is_host: true,
-                                        hosted_lobby: None, // TODO: keep lobby alive for arbitration
-                                    };
+                                    host_round_start = Some((letters, duration));
                                 }
                                 _ => {}
                             }
@@ -88,6 +83,34 @@ fn main() -> io::Result<()> {
                 }
                 _ => {}
             }
+
+            // Handle host transition outside the match to allow taking ownership
+            if let Some((letters, duration)) = host_round_start {
+                let old_screen = mem::replace(
+                    &mut coordinator.screen,
+                    Screen::Error {
+                        message: String::new(),
+                    },
+                );
+                if let Screen::HostLobby { lobby, .. } = old_screen {
+                    let player_names: Vec<String> =
+                        lobby.players().iter().map(|p| p.name.clone()).collect();
+                    let host_name = lobby.host_name.clone();
+
+                    let mut app = app::App::new();
+                    app.set_player_name(host_name);
+                    app.set_scoreboard(player_names);
+                    app.start_round(letters, duration);
+
+                    coordinator.screen = Screen::Playing {
+                        app,
+                        is_host: true,
+                        hosted_lobby: Some(lobby),
+                        joined_lobby: None,
+                    };
+                }
+            }
+
             last_second = Instant::now();
         }
 
@@ -156,14 +179,51 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
             }
             _ => {}
         },
-        Screen::Playing { app, .. } => match code {
+        Screen::Playing {
+            app,
+            hosted_lobby,
+            joined_lobby,
+            ..
+        } => match code {
             KeyCode::Esc => {
                 if app.is_round_over() {
                     coordinator.go_to_menu();
                 }
             }
             KeyCode::Enter => {
-                app.on_submit();
+                if let Some(word) = app.get_pending_claim() {
+                    if let Some(lobby) = hosted_lobby {
+                        // Host: arbitrate locally and broadcast
+                        if let Some(events) = lobby.host_claim(&word) {
+                            for event in events {
+                                match event {
+                                    lobby::LobbyEvent::ClaimAccepted {
+                                        word,
+                                        player_name,
+                                        points,
+                                    } => {
+                                        app.on_claim_accepted(word, player_name, points);
+                                    }
+                                    lobby::LobbyEvent::ClaimRejected { word, reason } => {
+                                        app.on_claim_rejected(
+                                            word,
+                                            app::AppCoordinator::map_reject_reason_pub(reason),
+                                        );
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                        app.clear_input();
+                    } else if let Some(lobby) = joined_lobby {
+                        // Client: send claim to host
+                        let _ = lobby.send_claim(&word);
+                        app.clear_input();
+                    } else {
+                        // Solo: local validation
+                        app.on_submit();
+                    }
+                }
             }
             KeyCode::Backspace => {
                 app.on_backspace();

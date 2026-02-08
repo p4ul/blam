@@ -234,6 +234,11 @@ impl App {
         self.feedback = "TIME'S UP!".to_string();
     }
 
+    /// Force end the round (called when host signals RoundEnd)
+    pub fn force_end_round(&mut self) {
+        self.end_round();
+    }
+
     /// Start a new round with given letters and duration
     pub fn start_round(&mut self, letters: Vec<char>, duration: u32) {
         self.letters = letters;
@@ -694,5 +699,154 @@ mod tests {
         app.start_round(vec!['C', 'A', 'T'], 60);
         app.on_claim_rejected("ZAP".to_string(), MissReason::InvalidLetters);
         assert_eq!(app.feedback, "CLANK");
+    }
+
+    #[test]
+    fn test_scoreboard_initialization() {
+        let mut app = App::new();
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into(), "Charlie".into()]);
+
+        assert_eq!(app.scoreboard.len(), 3);
+        assert_eq!(app.scoreboard[0].name, "Alice");
+        assert_eq!(app.scoreboard[0].score, 0);
+    }
+
+    #[test]
+    fn test_scoreboard_sorts_by_score() {
+        let mut app = App::new();
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+
+        app.update_scoreboard(vec![("Bob".into(), 10), ("Alice".into(), 5)]);
+
+        assert_eq!(app.scoreboard[0].name, "Bob");
+        assert_eq!(app.scoreboard[0].score, 10);
+        assert_eq!(app.scoreboard[1].name, "Alice");
+        assert_eq!(app.scoreboard[1].score, 5);
+    }
+
+    #[test]
+    fn test_claim_feed_updates_on_accepted() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Bob".into(), 3);
+
+        assert_eq!(app.claim_feed.len(), 1);
+        assert_eq!(app.claim_feed[0].player_name, "Bob");
+        assert_eq!(app.claim_feed[0].word, "CAB");
+        assert_eq!(app.claim_feed[0].points, 3);
+        // Bob's score should be updated in scoreboard
+        assert_eq!(app.scoreboard[0].name, "Bob");
+        assert_eq!(app.scoreboard[0].score, 3);
+    }
+
+    #[test]
+    fn test_claim_feed_max_entries() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        // Add more than max entries
+        for i in 0..15 {
+            app.on_claim_accepted(format!("WORD{}", i), "Bob".into(), 3);
+        }
+
+        assert_eq!(app.claim_feed.len(), 10); // Max is 10
+    }
+
+    #[test]
+    fn test_own_claim_updates_score() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+
+        assert_eq!(app.score, 3);
+        assert_eq!(app.claimed_words().len(), 1);
+    }
+
+    #[test]
+    fn test_other_player_claim_does_not_update_own_score() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Bob".into(), 3);
+
+        assert_eq!(app.score, 0); // Alice's score unchanged
+        assert_eq!(app.claimed_words().len(), 0); // Not in Alice's claimed list
+    }
+
+    #[test]
+    fn test_claim_rejected_updates_feedback() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_rejected("CAB".into(), MissReason::AlreadyClaimed { by: "Bob".into() });
+
+        assert!(app.feedback.contains("Bob"));
+        assert_eq!(app.missed_words().len(), 1);
+    }
+
+    #[test]
+    fn test_force_end_round() {
+        let mut app = App::new();
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        assert!(!app.is_round_over());
+        app.force_end_round();
+        assert!(app.is_round_over());
+    }
+
+    #[test]
+    fn test_get_pending_claim() {
+        let mut app = App::new();
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        assert!(app.get_pending_claim().is_none());
+
+        app.on_char('A');
+        app.on_char('B');
+        assert_eq!(app.get_pending_claim(), Some("AB".into()));
+
+        // After round ends, no pending claims
+        app.force_end_round();
+        assert!(app.get_pending_claim().is_none());
+    }
+
+    #[test]
+    fn test_start_round_resets_scoreboard_scores() {
+        let mut app = App::new();
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+        assert_eq!(app.scoreboard[0].score, 3);
+
+        // Starting new round resets scores but keeps players
+        app.start_round(vec!['X', 'Y', 'Z'], 60);
+        assert_eq!(app.scoreboard.len(), 2);
+        assert_eq!(app.scoreboard[0].score, 0);
+        assert_eq!(app.scoreboard[1].score, 0);
+    }
+
+    #[test]
+    fn test_scoreboard_adds_new_player() {
+        let mut app = App::new();
+        app.set_scoreboard(vec!["Alice".into()]);
+
+        // ScoreUpdate with new player
+        app.update_scoreboard(vec![("Alice".into(), 5), ("Bob".into(), 10)]);
+
+        assert_eq!(app.scoreboard.len(), 2);
+        assert_eq!(app.scoreboard[0].name, "Bob"); // Sorted by score
+        assert_eq!(app.scoreboard[1].name, "Alice");
     }
 }
