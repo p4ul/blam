@@ -12,6 +12,7 @@
 use crate::app::{App, AppCoordinator, MenuOption, Screen};
 use crate::lobby::Player;
 use crate::network::PeerInfo;
+use crate::storage::CachedPlayerStats;
 use ratatui::{
     prelude::*,
     widgets::{Block, Borders, List, ListItem, Paragraph},
@@ -48,6 +49,9 @@ pub fn render(frame: &mut Frame, coordinator: &AppCoordinator) {
         }
         Screen::Playing { app, .. } => {
             render_game(frame, app);
+        }
+        Screen::Rankings { players, current_handle, scroll_offset } => {
+            render_rankings(frame, players, current_handle, *scroll_offset);
         }
         Screen::Error { message } => {
             render_error(frame, message);
@@ -437,6 +441,115 @@ fn render_error(frame: &mut Frame, message: &str) {
         .style(Style::default().fg(Color::DarkGray))
         .alignment(Alignment::Center);
     frame.render_widget(hint, layout[2]);
+}
+
+/// Render the rankings leaderboard
+fn render_rankings(
+    frame: &mut Frame,
+    players: &[CachedPlayerStats],
+    current_handle: &str,
+    scroll_offset: usize,
+) {
+    let area = frame.area();
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Length(2), // Column headers
+            Constraint::Min(6),   // Player list
+            Constraint::Length(2), // Footer
+        ])
+        .margin(1)
+        .split(area);
+
+    // Header
+    let header = Paragraph::new("Rankings")
+        .style(Style::default().fg(Color::Yellow).bold())
+        .alignment(Alignment::Center)
+        .block(Block::default().borders(Borders::BOTTOM));
+    frame.render_widget(header, layout[0]);
+
+    if players.is_empty() {
+        let empty = Paragraph::new("No match history yet.\n\nPlay some multiplayer games to see rankings!")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(empty, layout[2]);
+    } else {
+        // Column headers
+        let col_header = Paragraph::new(format!(
+            "  {:<4} {:<14} {:>6}  {:>5}  {:>4}  {:>4}",
+            "Rank", "Player", "Elo", "W", "P", "Avg"
+        ))
+        .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(col_header, layout[1]);
+
+        // Calculate visible rows
+        let visible_rows = layout[2].height as usize;
+        let end = (scroll_offset + visible_rows).min(players.len());
+        let visible = &players[scroll_offset..end];
+
+        let items: Vec<ListItem> = visible
+            .iter()
+            .enumerate()
+            .map(|(i, stats)| {
+                let rank = scroll_offset + i + 1;
+                let is_current = stats.handle == current_handle;
+
+                let medal = match rank {
+                    1 => "  ",
+                    2 => "  ",
+                    3 => "  ",
+                    _ => "  ",
+                };
+
+                let avg = if stats.rounds_played > 0 {
+                    stats.total_points as f64 / stats.rounds_played as f64
+                } else {
+                    0.0
+                };
+
+                let line = format!(
+                    "{}{:<4} {:<14} {:>6.0}  {:>5}  {:>4}  {:>4.0}",
+                    medal,
+                    rank,
+                    if stats.handle.len() > 14 {
+                        &stats.handle[..14]
+                    } else {
+                        &stats.handle
+                    },
+                    stats.elo,
+                    stats.wins,
+                    stats.rounds_played,
+                    avg,
+                );
+
+                let style = if is_current {
+                    Style::default().fg(Color::Cyan).bold()
+                } else if rank == 1 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+
+                ListItem::new(line).style(style)
+            })
+            .collect();
+
+        let list = List::new(items).block(Block::default());
+        frame.render_widget(list, layout[2]);
+    }
+
+    // Footer
+    let footer_text = if !players.is_empty() {
+        "↑↓ Scroll  Esc Back"
+    } else {
+        "Esc Back"
+    };
+    let footer = Paragraph::new(footer_text)
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(footer, layout[3]);
 }
 
 /// Render the header: logo, letter rack, timer
