@@ -241,4 +241,82 @@ mod tests {
         assert_eq!(scores[1].0, "Bob");
         assert_eq!(scores[1].1, 3);
     }
+
+    #[test]
+    fn test_claim_sequence_increments() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        let r1 = arb.try_claim("cat", "Alice");
+        let r2 = arb.try_claim("dog", "Bob");
+        let r3 = arb.try_claim("tan", "Alice");
+
+        assert!(matches!(r1, ClaimResult::Accepted { claim_sequence: 1, .. }));
+        assert!(matches!(r2, ClaimResult::Accepted { claim_sequence: 2, .. }));
+        assert!(matches!(r3, ClaimResult::Accepted { claim_sequence: 3, .. }));
+    }
+
+    #[test]
+    fn test_rejected_claims_dont_increment_sequence() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        arb.try_claim("cat", "Alice"); // seq 1
+        arb.try_claim("cat", "Bob"); // rejected - no increment
+        let r3 = arb.try_claim("dog", "Bob"); // seq 2
+
+        assert!(matches!(r3, ClaimResult::Accepted { claim_sequence: 2, .. }));
+    }
+
+    #[test]
+    fn test_claimed_words_map() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        arb.try_claim("cat", "Alice");
+        arb.try_claim("dog", "Bob");
+
+        let claimed = arb.claimed_words();
+        assert_eq!(claimed.len(), 2);
+        assert_eq!(claimed.get("CAT"), Some(&"Alice".to_string()));
+        assert_eq!(claimed.get("DOG"), Some(&"Bob".to_string()));
+    }
+
+    #[test]
+    fn test_player_score_unknown_player() {
+        let arb = RoundArbitrator::new(test_letters(), &test_players());
+        assert_eq!(arb.player_score("UnknownPlayer"), 0);
+    }
+
+    #[test]
+    fn test_round_active_state() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+        assert!(arb.is_active());
+
+        arb.end_round();
+        assert!(!arb.is_active());
+    }
+
+    #[test]
+    fn test_multiple_claims_same_player() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        arb.try_claim("cat", "Alice"); // 3 points
+        arb.try_claim("dog", "Alice"); // 3 points
+        arb.try_claim("tan", "Alice"); // 3 points
+
+        assert_eq!(arb.player_score("Alice"), 9);
+        assert_eq!(arb.player_score("Bob"), 0);
+    }
+
+    #[test]
+    fn test_points_equal_word_length() {
+        let letters = vec!['C', 'A', 'T', 'S', 'D', 'O', 'G', 'E', 'R', 'N', 'A', 'T'];
+        let mut arb = RoundArbitrator::new(letters, &test_players());
+
+        // 3-letter word = 3 points
+        let r1 = arb.try_claim("cat", "Alice");
+        assert!(matches!(r1, ClaimResult::Accepted { points: 3, .. }));
+
+        // 4-letter word = 4 points
+        let r2 = arb.try_claim("dogs", "Bob");
+        assert!(matches!(r2, ClaimResult::Accepted { points: 4, .. }));
+    }
 }

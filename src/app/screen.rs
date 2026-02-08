@@ -454,3 +454,270 @@ impl AppCoordinator {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_menu_option_all() {
+        let options = MenuOption::all();
+        assert_eq!(options.len(), 4);
+        assert_eq!(options[0], MenuOption::StartLobby);
+        assert_eq!(options[1], MenuOption::JoinLobby);
+        assert_eq!(options[2], MenuOption::SoloPractice);
+        assert_eq!(options[3], MenuOption::Quit);
+    }
+
+    #[test]
+    fn test_menu_option_labels() {
+        assert_eq!(MenuOption::StartLobby.label(), "Start Lobby");
+        assert_eq!(MenuOption::JoinLobby.label(), "Join Lobby");
+        assert_eq!(MenuOption::SoloPractice.label(), "Solo Practice");
+        assert_eq!(MenuOption::Quit.label(), "Quit");
+    }
+
+    #[test]
+    fn test_app_coordinator_starts_at_menu() {
+        let app = AppCoordinator::new();
+        assert!(!app.should_quit);
+        assert!(matches!(app.screen, Screen::Menu { selected: 0, .. }));
+    }
+
+    #[test]
+    fn test_menu_navigation_up_down() {
+        let mut app = AppCoordinator::new();
+
+        // Start at 0, can't go up
+        app.menu_up();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 0);
+        }
+
+        // Go down
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 1);
+        }
+
+        // Go down again
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 2);
+        }
+
+        // Go down to last
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 3);
+        }
+
+        // Can't go past last
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 3);
+        }
+
+        // Go back up
+        app.menu_up();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 2);
+        }
+    }
+
+    #[test]
+    fn test_handle_editing() {
+        let mut app = AppCoordinator::new();
+
+        // Enter editing mode
+        app.menu_tab();
+        if let Screen::Menu { editing_handle, .. } = &app.screen {
+            assert!(*editing_handle);
+        }
+
+        // Type characters
+        app.menu_char('A');
+        app.menu_char('B');
+        app.menu_char('C');
+
+        // Exit editing mode
+        app.menu_tab();
+        if let Screen::Menu { editing_handle, handle, .. } = &app.screen {
+            assert!(!*editing_handle);
+            assert!(handle.ends_with("ABC") || handle.contains("ABC"));
+        }
+    }
+
+    #[test]
+    fn test_handle_backspace() {
+        let mut app = AppCoordinator::new();
+
+        // Enter editing mode
+        app.menu_tab();
+
+        // Clear and type new
+        // First clear existing content
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+
+        app.menu_char('X');
+        app.menu_char('Y');
+        app.menu_backspace();
+
+        if let Screen::Menu { handle_input, .. } = &app.screen {
+            assert_eq!(handle_input, "X");
+        }
+    }
+
+    #[test]
+    fn test_handle_max_length() {
+        let mut app = AppCoordinator::new();
+        app.menu_tab(); // Enter editing mode
+
+        // Clear existing
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+
+        // Type 15 characters (max is 12)
+        for _ in 0..15 {
+            app.menu_char('A');
+        }
+
+        if let Screen::Menu { handle_input, .. } = &app.screen {
+            assert!(handle_input.len() <= 12);
+        }
+    }
+
+    #[test]
+    fn test_navigation_disabled_while_editing() {
+        let mut app = AppCoordinator::new();
+
+        // Enter editing mode
+        app.menu_tab();
+
+        // Try to navigate
+        app.menu_down();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 0); // Should not move
+        }
+    }
+
+    #[test]
+    fn test_quit() {
+        let mut app = AppCoordinator::new();
+        assert!(!app.should_quit);
+        app.quit();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_go_to_menu() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate away from initial state
+        app.menu_down();
+        app.menu_down();
+
+        // Go to menu resets
+        app.go_to_menu();
+        if let Screen::Menu { selected, .. } = &app.screen {
+            assert_eq!(*selected, 0);
+        }
+    }
+
+    #[test]
+    fn test_menu_select_quit() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Quit (index 3)
+        app.menu_down();
+        app.menu_down();
+        app.menu_down();
+        app.menu_select();
+
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_menu_select_solo_practice() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Solo Practice (index 2)
+        app.menu_down();
+        app.menu_down();
+        app.menu_select();
+
+        assert!(matches!(app.screen, Screen::Playing { .. }));
+    }
+
+    #[test]
+    fn test_map_reject_reasons() {
+        assert_eq!(
+            AppCoordinator::map_reject_reason_pub(ClaimRejectReason::TooShort),
+            super::super::state::MissReason::TooShort
+        );
+        assert_eq!(
+            AppCoordinator::map_reject_reason_pub(ClaimRejectReason::NotInDictionary),
+            super::super::state::MissReason::NotInDictionary
+        );
+        assert!(matches!(
+            AppCoordinator::map_reject_reason_pub(ClaimRejectReason::InvalidLetters { missing: vec!['X'] }),
+            super::super::state::MissReason::InvalidLetters
+        ));
+        assert!(matches!(
+            AppCoordinator::map_reject_reason_pub(ClaimRejectReason::AlreadyClaimed { by: "Bob".to_string() }),
+            super::super::state::MissReason::AlreadyClaimed { by } if by == "Bob"
+        ));
+    }
+
+    #[test]
+    fn test_enter_editing_saves_on_exit() {
+        let mut app = AppCoordinator::new();
+
+        // Enter editing
+        app.menu_tab();
+
+        // Clear and type a new handle
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+        app.menu_char('Z');
+        app.menu_char('E');
+        app.menu_char('D');
+
+        // Exit editing
+        app.menu_tab();
+
+        if let Screen::Menu { handle, .. } = &app.screen {
+            assert_eq!(handle, "ZED");
+        }
+    }
+
+    #[test]
+    fn test_empty_handle_restores_previous() {
+        let mut app = AppCoordinator::new();
+
+        // Get current handle
+        let original = match &app.screen {
+            Screen::Menu { handle, .. } => handle.clone(),
+            _ => panic!(),
+        };
+
+        // Enter editing
+        app.menu_tab();
+
+        // Clear everything
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+
+        // Exit editing with empty input - should restore
+        app.menu_tab();
+
+        if let Screen::Menu { handle, .. } = &app.screen {
+            assert_eq!(*handle, original);
+        }
+    }
+}

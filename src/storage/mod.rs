@@ -1471,4 +1471,198 @@ mod tests {
         assert_eq!(result.scores[0], ("Alice".to_string(), 50));
         assert!(result.completed);
     }
+
+    // === Multi-Actor Vector Clock Tests ===
+
+    #[test]
+    fn test_vector_clock_multiple_actors() {
+        let storage = Storage::open_in_memory().unwrap();
+
+        // Local actor creates events
+        storage.append_event("test", "{}").unwrap();
+        storage.append_event("test", "{}").unwrap();
+
+        // Remote actor creates events
+        let remote = ActorId::generate();
+        for seq in 1..=3 {
+            storage.insert_remote_event(&Event {
+                actor_id: remote.clone(),
+                seq,
+                event_type: "test".to_string(),
+                payload: "{}".to_string(),
+                created_at: 1000 + seq,
+            }).unwrap();
+        }
+
+        let vclock = storage.get_vector_clock().unwrap();
+        assert_eq!(vclock.len(), 2);
+
+        // Find local and remote entries
+        let local_entry = vclock.iter().find(|(id, _)| *id == *storage.actor_id()).unwrap();
+        let remote_entry = vclock.iter().find(|(id, _)| *id == remote).unwrap();
+
+        assert_eq!(local_entry.1, 2);
+        assert_eq!(remote_entry.1, 3);
+    }
+
+    #[test]
+    fn test_event_ordering() {
+        let storage = Storage::open_in_memory().unwrap();
+
+        storage.append_event("first", "{}").unwrap();
+        storage.append_event("second", "{}").unwrap();
+        storage.append_event("third", "{}").unwrap();
+
+        let events = storage.get_all_events().unwrap();
+        assert_eq!(events[0].event_type, "first");
+        assert_eq!(events[1].event_type, "second");
+        assert_eq!(events[2].event_type, "third");
+        assert_eq!(events[0].seq, 1);
+        assert_eq!(events[1].seq, 2);
+        assert_eq!(events[2].seq, 3);
+    }
+
+    // === Derived Cache Combined Tests ===
+
+    #[test]
+    fn test_rebuild_caches_with_matches_and_claims() {
+        let storage = Storage::open_in_memory().unwrap();
+
+        // Add word claims
+        let claim1 = r#"{"word":"ELEPHANT","player_name":"Alice","points":8}"#;
+        let claim2 = r#"{"word":"CAT","player_name":"Bob","points":3}"#;
+        storage.append_event("word_claimed", claim1).unwrap();
+        storage.append_event("word_claimed", claim2).unwrap();
+
+        // Add match results
+        let match1 = r#"{"match_id":1,"scores":[["Alice",50],["Bob",30]],"host_actor_id":"h","completed":true}"#;
+        storage.append_event("match_end", match1).unwrap();
+
+        storage.rebuild_derived_caches().unwrap();
+
+        let alice = storage.get_cached_stats("Alice").unwrap().unwrap();
+        assert_eq!(alice.rounds_played, 1);
+        assert_eq!(alice.total_points, 50);
+        assert_eq!(alice.words_claimed, 1);
+        assert_eq!(alice.longest_word, "ELEPHANT");
+        assert_eq!(alice.wins, 1);
+        assert!(alice.elo > 1200.0);
+
+        let bob = storage.get_cached_stats("Bob").unwrap().unwrap();
+        assert_eq!(bob.rounds_played, 1);
+        assert_eq!(bob.total_points, 30);
+        assert_eq!(bob.words_claimed, 1);
+        assert_eq!(bob.longest_word, "CAT");
+        assert_eq!(bob.wins, 0);
+        assert!(bob.elo < 1200.0);
+    }
+
+    #[test]
+    fn test_cached_stats_nonexistent_player() {
+        let storage = Storage::open_in_memory().unwrap();
+        storage.rebuild_derived_caches().unwrap();
+        assert!(storage.get_cached_stats("Nobody").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_rebuild_caches_idempotent() {
+        let storage = Storage::open_in_memory().unwrap();
+
+        let match1 = r#"{"match_id":1,"scores":[["Alice",50],["Bob",30]],"host_actor_id":"h","completed":true}"#;
+        storage.append_event("match_end", match1).unwrap();
+
+        // Rebuild twice
+        storage.rebuild_derived_caches().unwrap();
+        let alice1 = storage.get_cached_stats("Alice").unwrap().unwrap();
+
+        storage.rebuild_derived_caches().unwrap();
+        let alice2 = storage.get_cached_stats("Alice").unwrap().unwrap();
+
+        assert_eq!(alice1.rounds_played, alice2.rounds_played);
+        assert_eq!(alice1.total_points, alice2.total_points);
+        assert!((alice1.elo - alice2.elo).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_elo_history_recorded() {
+        let storage = Storage::open_in_memory().unwrap();
+
+        let match1 = r#"{"match_id":1,"scores":[["Alice",50],["Bob",30]],"host_actor_id":"h","completed":true}"#;
+        storage.append_event("match_end", match1).unwrap();
+
+        storage.rebuild_derived_caches().unwrap();
+
+        // Check that elo_history has entries
+        let count: i64 = storage.conn.query_row(
+            "SELECT COUNT(*) FROM derived_elo_history WHERE match_id = 1",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+        assert_eq!(count, 2); // One entry per player
+    }
+
+    // === Versioned Payload Edge Cases ===
+
+    #[test]
+    fn test_versioned_payload_non_object() {
+        let versioned = create_versioned_payload("42");
+        assert!(versioned.contains("payload_version"));
+        assert!(versioned.contains("\"data\":42"));
+    }
+
+    #[test]
+    fn test_versioned_payload_roundtrip() {
+        let inner = r#"{"match_id":1,"scores":[["A",50]]}"#;
+        let versioned = create_versioned_payload(inner);
+
+        assert_eq!(extract_payload_version(&versioned), Some(PAYLOAD_VERSION));
+        assert!(is_payload_compatible(&versioned));
+
+        // Original data is preserved
+        let match_id = extract_json_i64(&versioned, "match_id");
+        assert_eq!(match_id, Some(1));
+    }
+
+    // === Actor ID Edge Cases ===
+
+    #[test]
+    fn test_actor_id_from_wrong_size() {
+        assert!(ActorId::from_bytes(&[0u8; 15]).is_none()); // too short
+        assert!(ActorId::from_bytes(&[0u8; 17]).is_none()); // too long
+        assert!(ActorId::from_bytes(&[]).is_none()); // empty
+    }
+
+    #[test]
+    fn test_actor_id_hex_length() {
+        let id = ActorId::generate();
+        assert_eq!(id.to_hex().len(), 32);
+    }
+
+    // === JSON Parsing Edge Cases ===
+
+    #[test]
+    fn test_extract_json_string_missing_key() {
+        let json = r#"{"name":"Alice"}"#;
+        assert!(extract_json_string(json, "missing").is_none());
+    }
+
+    #[test]
+    fn test_extract_json_i64_negative() {
+        let json = r#"{"match_id":-42}"#;
+        assert_eq!(extract_json_i64(json, "match_id"), Some(-42));
+    }
+
+    #[test]
+    fn test_extract_json_scores_empty() {
+        let json = r#"{"scores":[]}"#;
+        let scores = extract_json_scores(json).unwrap();
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn test_parse_match_result_incomplete() {
+        let payload = r#"{"match_id":1,"scores":[["A",50]],"host_actor_id":"h","completed":false}"#;
+        let result = parse_match_result_payload(payload).unwrap();
+        assert!(!result.completed);
+    }
 }

@@ -157,4 +157,43 @@ mod tests {
 
         assert_eq!(rack1.as_string(), rack2.as_string());
     }
+
+    #[test]
+    fn test_rack_as_string() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(99);
+        let rack = LetterRack::generate_with_rng(&mut rng);
+        let s = rack.as_string();
+        assert_eq!(s.len(), rack.len());
+        assert!(s.chars().all(|c| c.is_ascii_uppercase()));
+    }
+
+    #[test]
+    fn test_rack_is_empty() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(1);
+        let rack = LetterRack::generate_with_rng(&mut rng);
+        assert!(!rack.is_empty());
+    }
+
+    #[test]
+    fn test_different_seeds_different_racks() {
+        use rand::SeedableRng;
+        let mut rng1 = rand::rngs::StdRng::seed_from_u64(1);
+        let mut rng2 = rand::rngs::StdRng::seed_from_u64(999);
+        let rack1 = LetterRack::generate_with_rng(&mut rng1);
+        let rack2 = LetterRack::generate_with_rng(&mut rng2);
+        // Extremely unlikely to be equal with different seeds
+        assert_ne!(rack1.as_string(), rack2.as_string());
+    }
+
+    #[test]
+    fn test_rack_letters_accessor() {
+        let rack = LetterRack::generate();
+        let letters = rack.letters();
+        assert_eq!(letters.len(), rack.len());
+        for &c in letters {
+            assert!(c.is_ascii_uppercase());
+        }
+    }
 }
