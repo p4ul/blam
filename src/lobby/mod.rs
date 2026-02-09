@@ -1054,3 +1054,820 @@ mod tests {
         assert_eq!(player.ready, cloned.ready);
     }
 }
+
+/// End-to-end integration tests covering anti-cheat and cross-network multiplayer
+#[cfg(test)]
+mod e2e_tests {
+    use super::*;
+    use crate::network::client::Client;
+    use crate::network::protocol::Message;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Fixed letters for deterministic testing.
+    /// Contains letters for: CAT, DOG, CATS, DOGS, TAN, ANT, COD, COG, etc.
+    const TEST_LETTERS: [char; 12] = ['C', 'A', 'T', 'D', 'O', 'G', 'S', 'N', 'E', 'R', 'I', 'T'];
+
+    fn test_letters_vec() -> Vec<char> {
+        TEST_LETTERS.to_vec()
+    }
+
+    // =========================================================================
+    // Anti-cheat: Server-authoritative claim validation
+    // =========================================================================
+
+    #[test]
+    fn e2e_anticheat_host_rejects_word_not_on_board() {
+        // Host creates lobby, starts round, attempts a word using letters NOT in rack
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // "ZAP" requires Z which is not in the rack
+        let events = lobby.host_claim("zap").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::InvalidLetters { .. }, .. }
+        )), "Server should reject words with letters not on the board");
+    }
+
+    #[test]
+    fn e2e_anticheat_host_rejects_word_not_in_dictionary() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // "TAG" reversed - "GAT" is not a standard dictionary word
+        let events = lobby.host_claim("gat").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::NotInDictionary, .. }
+        )), "Server should reject words not in dictionary");
+    }
+
+    #[test]
+    fn e2e_anticheat_host_rejects_already_claimed_word() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Claim CAT first - should succeed
+        let events = lobby.host_claim("cat").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimAccepted { word, .. } if word == "CAT"
+        )));
+
+        // Claim CAT again - should be rejected as already claimed
+        let events = lobby.host_claim("cat").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::AlreadyClaimed { .. }, .. }
+        )), "Server should reject duplicate claims");
+    }
+
+    #[test]
+    fn e2e_anticheat_scores_are_server_authoritative() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Host claims CAT (3 pts) and DOG (3 pts)
+        lobby.host_claim("cat");
+        lobby.host_claim("dog");
+
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        assert_eq!(host_score, 6, "Score should be sum of word lengths: 3 + 3 = 6");
+
+        // Try to claim an invalid word - score should NOT change
+        lobby.host_claim("zzz");
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        assert_eq!(host_score, 6, "Score should not change after invalid claim");
+    }
+
+    #[test]
+    fn e2e_anticheat_rapid_valid_submissions() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Rapid-fire valid word submissions
+        let words = ["cat", "dog", "tan", "ant", "cod"];
+        let mut total_expected = 0u32;
+        for word in &words {
+            let events = lobby.host_claim(word).unwrap();
+            assert!(events.iter().any(|e| matches!(e, LobbyEvent::ClaimAccepted { .. })),
+                "Rapid submission of '{}' should be accepted", word);
+            total_expected += word.len() as u32;
+        }
+
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        assert_eq!(host_score, total_expected,
+            "All rapid valid claims should be scored correctly");
+    }
+
+    #[test]
+    fn e2e_anticheat_rapid_invalid_submissions() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Rapid-fire invalid word submissions
+        let invalid_words = ["zzz", "xyz", "qqq", "", "asdfjkl"];
+        for word in &invalid_words {
+            let result = lobby.host_claim(word);
+            if let Some(events) = result {
+                // All should be rejected (no ClaimAccepted)
+                assert!(!events.iter().any(|e| matches!(e, LobbyEvent::ClaimAccepted { .. })),
+                    "Invalid word '{}' should not be accepted", word);
+            }
+        }
+
+        // Score should remain 0
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        assert_eq!(host_score, 0, "Score should be 0 after only invalid submissions");
+    }
+
+    #[test]
+    fn e2e_anticheat_claims_rejected_after_round_end() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Claim one word successfully
+        lobby.host_claim("cat");
+
+        // End the round
+        lobby.end_round();
+
+        // Try to claim after round end
+        let events = lobby.host_claim("dog").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::RoundEnded, .. }
+        )), "Claims after round end should be rejected");
+    }
+
+    #[test]
+    fn e2e_anticheat_case_insensitive_duplicate_detection() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(test_letters_vec(), 60);
+
+        // Claim "CAT" in uppercase
+        let events = lobby.host_claim("CAT").unwrap();
+        assert!(events.iter().any(|e| matches!(e, LobbyEvent::ClaimAccepted { .. })));
+
+        // Try "cat" in lowercase - should be rejected as duplicate
+        let events = lobby.host_claim("cat").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::AlreadyClaimed { .. }, .. }
+        )), "Case-insensitive duplicate should be rejected");
+
+        // Try "Cat" mixed case - should also be rejected
+        let events = lobby.host_claim("Cat").unwrap();
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::AlreadyClaimed { .. }, .. }
+        )), "Mixed-case duplicate should be rejected");
+    }
+
+    #[test]
+    fn e2e_anticheat_letter_multiplicity_enforced() {
+        // Rack has only one 'C' - words needing two C's should fail
+        let letters = vec!['C', 'A', 'T', 'O', 'D', 'G', 'E', 'R', 'S', 'N', 'I', 'L'];
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        lobby.start_round(letters, 60);
+
+        // "CACTI" would need two C's but rack only has one
+        let events = lobby.host_claim("cactis");
+        if let Some(events) = events {
+            assert!(!events.iter().any(|e| matches!(e, LobbyEvent::ClaimAccepted { .. })),
+                "Words requiring more letter copies than available should be rejected");
+        }
+    }
+
+    // =========================================================================
+    // Cross-network multiplayer: TCP server-client game flow
+    // =========================================================================
+
+    #[test]
+    fn e2e_multiplayer_client_connects_and_joins() {
+        let mut lobby = HostedLobby::new("HostPlayer".into()).unwrap();
+        let port = lobby.port();
+
+        // Client connects
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "ClientPlayer".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        // Wait for connection to establish
+        thread::sleep(Duration::from_millis(200));
+        let events = lobby.poll();
+
+        // Verify player joined
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::PlayerJoined(name) if name == "ClientPlayer"
+        )), "Client should be able to join the lobby");
+
+        assert_eq!(lobby.player_count(), 2, "Lobby should have host + client = 2 players");
+    }
+
+    #[test]
+    fn e2e_multiplayer_client_receives_round_start() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll(); // Process join
+
+        // Start round
+        let letters = test_letters_vec();
+        lobby.start_round(letters.clone(), 60);
+
+        // Client should receive RoundStart
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::RoundStart { letters: l, duration_secs: 60 } if *l == letters
+        )), "Client should receive RoundStart with correct letters and duration");
+    }
+
+    #[test]
+    fn e2e_multiplayer_client_claim_validated_by_server() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll(); // Process join
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll(); // Consume RoundStart
+
+        // Client sends a valid claim
+        client.send_claim_attempt("cat").unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        let events = lobby.poll(); // Process claim
+
+        // Server should accept
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::ClaimAccepted { word, player_name, points: 3 }
+            if word == "CAT" && player_name == "Client"
+        )), "Server should validate and accept client's valid claim");
+
+        // Client should receive ClaimAccepted
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ClaimAccepted { word, player_name, points: 3 }
+            if word == "CAT" && player_name == "Client"
+        )), "Client should receive ClaimAccepted confirmation");
+    }
+
+    #[test]
+    fn e2e_multiplayer_client_invalid_claim_rejected() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Client sends an invalid claim (letters not on board)
+        client.send_claim_attempt("zzz").unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Client should receive rejection
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ClaimRejected { .. }
+        )), "Client should receive ClaimRejected for invalid word");
+    }
+
+    #[test]
+    fn e2e_multiplayer_host_and_client_compete() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Host claims CAT
+        lobby.host_claim("cat");
+
+        // Client tries to claim CAT too (should be rejected - already claimed)
+        client.send_claim_attempt("cat").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ClaimRejected { word, reason: ClaimRejectReason::AlreadyClaimed { .. } }
+            if word == "CAT"
+        )), "Client should be told CAT was already claimed");
+
+        // Client claims DOG (different word, should succeed)
+        client.send_claim_attempt("dog").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ClaimAccepted { word, player_name, points: 3 }
+            if word == "DOG" && player_name == "Client"
+        )), "Client should claim DOG successfully");
+
+        // Verify final scores: Host=3 (CAT), Client=3 (DOG)
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        let client_score = scores.iter().find(|(n, _)| n == "Client").map(|(_, s)| *s).unwrap_or(0);
+        assert_eq!(host_score, 3, "Host should have 3 points for CAT");
+        assert_eq!(client_score, 3, "Client should have 3 points for DOG");
+    }
+
+    #[test]
+    fn e2e_multiplayer_score_updates_broadcast() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Host claims a word
+        lobby.host_claim("cat");
+
+        // Client should receive both ClaimAccepted and ScoreUpdate
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ScoreUpdate { .. }
+        )), "Score updates should be broadcast to clients after claims");
+    }
+
+    #[test]
+    fn e2e_multiplayer_round_end_broadcast() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // End the round
+        lobby.end_round();
+
+        // Client should receive RoundEnd
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(m, Message::RoundEnd)),
+            "RoundEnd should be broadcast to clients");
+    }
+
+    #[test]
+    fn e2e_multiplayer_client_claim_after_round_end() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // End round
+        lobby.end_round();
+        thread::sleep(Duration::from_millis(100));
+        client.poll(); // consume RoundEnd
+
+        // Client tries to claim after round end
+        client.send_claim_attempt("cat").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::ClaimRejected { reason: ClaimRejectReason::RoundEnded, .. }
+        )), "Claims after round end should be rejected for remote clients");
+    }
+
+    #[test]
+    fn e2e_multiplayer_two_clients_full_game() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        // Two clients connect
+        let mut client1 = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Alice".into(),
+        ).unwrap();
+        client1.join().unwrap();
+
+        let mut client2 = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Bob".into(),
+        ).unwrap();
+        client2.join().unwrap();
+
+        thread::sleep(Duration::from_millis(300));
+        lobby.poll();
+
+        assert_eq!(lobby.player_count(), 3, "Should have Host + Alice + Bob");
+
+        // Start round
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(200));
+        client1.poll();
+        client2.poll();
+
+        // Host claims CAT
+        lobby.host_claim("cat");
+
+        // Alice claims DOG
+        client1.send_claim_attempt("dog").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Bob claims TAN
+        client2.send_claim_attempt("tan").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // End round
+        let end_events = lobby.end_round();
+        assert!(end_events.iter().any(|e| matches!(e, LobbyEvent::RoundEnd)));
+
+        // Verify final scores
+        let scores = lobby.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        let alice_score = scores.iter().find(|(n, _)| n == "Alice").map(|(_, s)| *s).unwrap_or(0);
+        let bob_score = scores.iter().find(|(n, _)| n == "Bob").map(|(_, s)| *s).unwrap_or(0);
+
+        assert_eq!(host_score, 3, "Host: CAT = 3pts");
+        assert_eq!(alice_score, 3, "Alice: DOG = 3pts");
+        assert_eq!(bob_score, 3, "Bob: TAN = 3pts");
+    }
+
+    #[test]
+    fn e2e_multiplayer_concurrent_claims_first_wins() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client1 = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Alice".into(),
+        ).unwrap();
+        client1.join().unwrap();
+
+        let mut client2 = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Bob".into(),
+        ).unwrap();
+        client2.join().unwrap();
+
+        thread::sleep(Duration::from_millis(300));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(200));
+        client1.poll();
+        client2.poll();
+
+        // Both clients try to claim the same word
+        client1.send_claim_attempt("cat").unwrap();
+        client2.send_claim_attempt("cat").unwrap();
+
+        // Give time for messages to arrive
+        thread::sleep(Duration::from_millis(300));
+        let events = lobby.poll();
+
+        // One should be accepted, one rejected
+        let accepted_count = events.iter().filter(|e| matches!(e, LobbyEvent::ClaimAccepted { .. })).count();
+        let rejected_count = events.iter().filter(|e| matches!(
+            e,
+            LobbyEvent::ClaimRejected { reason: ClaimRejectReason::AlreadyClaimed { .. }, .. }
+        )).count();
+
+        assert_eq!(accepted_count, 1, "Only one concurrent claim should be accepted");
+        assert_eq!(rejected_count, 1, "The other concurrent claim should be rejected as duplicate");
+    }
+
+    #[test]
+    fn e2e_multiplayer_client_disconnect_detected() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Quitter".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+        assert_eq!(lobby.player_count(), 2);
+
+        // Client disconnects by sending Leave
+        client.leave().unwrap();
+
+        // Give time for disconnect to propagate
+        thread::sleep(Duration::from_millis(300));
+        let events = lobby.poll();
+
+        // Should detect player left
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::PlayerLeft(name) if name == "Quitter"
+        )), "Server should detect when a client disconnects");
+    }
+
+    #[test]
+    fn e2e_multiplayer_countdown_broadcast() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Start countdown
+        let countdown_val = lobby.start_countdown(test_letters_vec(), 60);
+        assert_eq!(countdown_val, 3, "Countdown should start at 3");
+
+        // Client should receive countdown message
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::Countdown { countdown_secs: 3, .. }
+        )), "Client should receive countdown broadcast");
+
+        // Tick countdown
+        lobby.tick_countdown();
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::Countdown { countdown_secs: 2, .. }
+        )), "Client should receive updated countdown");
+
+        // Tick again
+        lobby.tick_countdown();
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::Countdown { countdown_secs: 1, .. }
+        )));
+
+        // Final tick starts the round
+        lobby.tick_countdown();
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::RoundStart { .. }
+        )), "Final countdown tick should trigger RoundStart broadcast");
+    }
+
+    #[test]
+    fn e2e_multiplayer_word_claimed_crdt_events() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Host claims a word
+        let events = lobby.host_claim("cat").unwrap();
+
+        // Should get WordClaimed event with CRDT metadata
+        assert!(events.iter().any(|e| matches!(
+            e,
+            LobbyEvent::WordClaimed { word, claim_sequence: 1, .. } if word == "CAT"
+        )), "Host claim should produce WordClaimed CRDT event");
+
+        // Client should receive WordClaimed message
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::WordClaimed { word, claim_sequence: 1, .. } if word == "CAT"
+        )), "Client should receive WordClaimed with CRDT metadata");
+    }
+
+    #[test]
+    fn e2e_multiplayer_game_state_stays_synchronized() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Host claims multiple words
+        lobby.host_claim("cat");
+        lobby.host_claim("dog");
+
+        // Client claims a word
+        client.send_claim_attempt("tan").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Collect all client messages
+        thread::sleep(Duration::from_millis(200));
+        let messages = client.poll();
+
+        // Client should have received all score updates
+        let score_updates: Vec<_> = messages.iter().filter(|m| matches!(m, Message::ScoreUpdate { .. })).collect();
+        assert!(!score_updates.is_empty(), "Client should receive score updates for state sync");
+
+        // The last score update should reflect all claims
+        if let Some(Message::ScoreUpdate { scores }) = score_updates.last() {
+            let total: u32 = scores.iter().map(|(_, s)| s).sum();
+            assert_eq!(total, 9, "Total scores should be 3+3+3=9 across all players");
+        }
+    }
+
+    #[test]
+    fn e2e_multiplayer_winner_has_highest_score() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        let mut client = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "Client".into(),
+        ).unwrap();
+        client.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Use letters that allow CATS (4 pts) and shorter words
+        lobby.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(100));
+        client.poll();
+
+        // Host claims short words: CAT(3) + DOG(3) = 6
+        lobby.host_claim("cat");
+        lobby.host_claim("dog");
+
+        // Client claims a longer word: CATS(4) + TAN(3) = 7
+        client.send_claim_attempt("cats").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        client.send_claim_attempt("tan").unwrap();
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // End round and check winner
+        lobby.end_round();
+
+        let scores = lobby.scores();
+        // Scores are sorted highest first
+        assert_eq!(scores[0].0, "Client", "Client with 7 points should be ranked first");
+        assert_eq!(scores[0].1, 7);
+        assert_eq!(scores[1].0, "Host", "Host with 6 points should be ranked second");
+        assert_eq!(scores[1].1, 6);
+    }
+
+    #[test]
+    fn e2e_multiplayer_max_players_respected() {
+        let mut lobby = HostedLobby::new("Host".into()).unwrap();
+        let port = lobby.port();
+
+        // Connect MAX_PLAYERS - 1 clients (host is already player 1)
+        let mut clients = Vec::new();
+        for i in 0..(MAX_PLAYERS - 1) {
+            let c = Client::connect(
+                &format!("127.0.0.1:{}", port),
+                format!("Player{}", i),
+            ).unwrap();
+            clients.push(c);
+        }
+
+        // Join all
+        for c in &mut clients {
+            c.join().unwrap();
+        }
+
+        thread::sleep(Duration::from_millis(500));
+        lobby.poll();
+
+        assert_eq!(lobby.player_count(), MAX_PLAYERS,
+            "Lobby should have exactly MAX_PLAYERS");
+
+        // Try to connect one more - should connect but join should be ignored at capacity
+        let mut extra = Client::connect(
+            &format!("127.0.0.1:{}", port),
+            "ExtraPlayer".into(),
+        ).unwrap();
+        extra.join().unwrap();
+
+        thread::sleep(Duration::from_millis(200));
+        lobby.poll();
+
+        // Should still be at max
+        assert!(lobby.player_count() <= MAX_PLAYERS,
+            "Lobby should not exceed MAX_PLAYERS");
+    }
+}
