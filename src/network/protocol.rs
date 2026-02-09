@@ -1138,4 +1138,136 @@ mod tests {
             panic!("Expected ScoreUpdate");
         }
     }
+
+    #[test]
+    fn test_escape_json_all_special_chars() {
+        assert_eq!(escape_json("hello"), "hello");
+        assert_eq!(escape_json(r#"he"llo"#), r#"he\"llo"#);
+        assert_eq!(escape_json("he\\llo"), "he\\\\llo");
+        assert_eq!(escape_json("he\nllo"), "he\\nllo");
+        assert_eq!(escape_json("he\rllo"), "he\\rllo");
+        assert_eq!(escape_json("he\tllo"), "he\\tllo");
+    }
+
+    #[test]
+    fn test_unescape_json_roundtrip() {
+        let original = r#"Test"User\Name"#;
+        let escaped = escape_json(original);
+        let unescaped = unescape_json(&escaped);
+        assert_eq!(unescaped, original);
+    }
+
+    #[test]
+    fn test_unescape_json_trailing_backslash() {
+        let result = unescape_json("hello\\");
+        assert_eq!(result, "hello\\");
+    }
+
+    #[test]
+    fn test_unescape_json_unknown_escape() {
+        let result = unescape_json("hello\\xworld");
+        assert_eq!(result, "hello\\xworld");
+    }
+
+    #[test]
+    fn test_find_unescaped_quote_simple() {
+        assert_eq!(find_unescaped_quote("hello\""), Some(5));
+        assert_eq!(find_unescaped_quote("\""), Some(0));
+    }
+
+    #[test]
+    fn test_find_unescaped_quote_escaped() {
+        // \" should be skipped
+        assert_eq!(find_unescaped_quote("\\\"hello\""), Some(7));
+    }
+
+    #[test]
+    fn test_find_unescaped_quote_none() {
+        assert_eq!(find_unescaped_quote("hello"), None);
+        assert_eq!(find_unescaped_quote(""), None);
+    }
+
+    #[test]
+    fn test_claim_reject_reason_clone_eq() {
+        let r1 = ClaimRejectReason::TooShort;
+        let r2 = r1.clone();
+        assert_eq!(r1, r2);
+
+        let r3 = ClaimRejectReason::AlreadyClaimed { by: "Alice".to_string() };
+        let r4 = r3.clone();
+        assert_eq!(r3, r4);
+
+        assert_ne!(r1, r3);
+    }
+
+    #[test]
+    fn test_message_to_bytes_length_prefix() {
+        let msg = Message::Ping;
+        let bytes = msg.to_bytes();
+
+        // First 4 bytes are the length prefix
+        let len = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as usize;
+        assert_eq!(len, bytes.len() - 4);
+
+        // Rest is the JSON
+        let json = std::str::from_utf8(&bytes[4..]).unwrap();
+        assert!(json.contains("ping"));
+    }
+
+    #[test]
+    fn test_sync_event_struct() {
+        let event = SyncEvent {
+            actor_id: "abc123".to_string(),
+            seq: 42,
+            event_type: "claim".to_string(),
+            payload: r#"{"word":"TEST"}"#.to_string(),
+            created_at: 1000000,
+        };
+        let cloned = event.clone();
+        assert_eq!(event, cloned);
+    }
+
+    #[test]
+    fn test_message_debug() {
+        let msg = Message::Ping;
+        let debug = format!("{:?}", msg);
+        assert!(debug.contains("Ping"));
+    }
+
+    #[test]
+    fn test_claim_rejected_all_reasons_roundtrip() {
+        let reasons = vec![
+            ClaimRejectReason::TooShort,
+            ClaimRejectReason::NotInDictionary,
+            ClaimRejectReason::RoundEnded,
+            ClaimRejectReason::InvalidLetters { missing: vec!['A', 'B'] },
+            ClaimRejectReason::AlreadyClaimed { by: "TestPlayer".to_string() },
+        ];
+
+        for reason in reasons {
+            let msg = Message::ClaimRejected {
+                word: "TEST".to_string(),
+                reason: reason.clone(),
+            };
+            let bytes = msg.to_bytes();
+            let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+            assert_eq!(parsed, msg);
+        }
+    }
+
+    #[test]
+    fn test_newline_in_player_name_roundtrip() {
+        let msg = Message::Join { player_name: "Test\nUser".to_string() };
+        let bytes = msg.to_bytes();
+        let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
+
+    #[test]
+    fn test_tab_in_word_roundtrip() {
+        let msg = Message::ClaimAttempt { word: "TE\tST".to_string() };
+        let bytes = msg.to_bytes();
+        let (parsed, _) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+    }
 }

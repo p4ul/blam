@@ -872,4 +872,307 @@ mod tests {
             assert_eq!(*handle, original);
         }
     }
+
+    #[test]
+    fn test_settings_char_input() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings (index 4)
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        assert!(matches!(app.screen, Screen::Settings { .. }));
+
+        // Clear and type
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+        app.settings_char('T');
+        app.settings_char('E');
+        app.settings_char('S');
+        app.settings_char('T');
+
+        if let Screen::Settings { handle_input, .. } = &app.screen {
+            assert_eq!(handle_input, "TEST");
+        }
+    }
+
+    #[test]
+    fn test_settings_backspace() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Clear and type
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+        app.settings_char('A');
+        app.settings_char('B');
+        app.settings_backspace();
+
+        if let Screen::Settings { handle_input, .. } = &app.screen {
+            assert_eq!(handle_input, "A");
+        }
+    }
+
+    #[test]
+    fn test_settings_save_valid() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Clear and type valid handle
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+        app.settings_char('N');
+        app.settings_char('E');
+        app.settings_char('W');
+
+        app.settings_save();
+
+        if let Screen::Settings { handle, feedback, .. } = &app.screen {
+            assert_eq!(handle, "NEW");
+            assert_eq!(feedback, "Saved!");
+        }
+    }
+
+    #[test]
+    fn test_settings_save_empty_rejected() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Clear everything
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+
+        app.settings_save();
+
+        if let Screen::Settings { feedback, .. } = &app.screen {
+            assert_eq!(feedback, "Handle cannot be empty");
+        }
+    }
+
+    #[test]
+    fn test_settings_save_invalid_chars_rejected() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Clear and type invalid handle with spaces
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+        app.settings_char('A');
+        app.settings_char(' ');
+        app.settings_char('B');
+
+        app.settings_save();
+
+        if let Screen::Settings { feedback, .. } = &app.screen {
+            assert_eq!(feedback, "Only letters, numbers, and _ allowed");
+        }
+    }
+
+    #[test]
+    fn test_settings_max_length() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Clear and type 15 characters (max is 12)
+        for _ in 0..20 {
+            app.settings_backspace();
+        }
+        for _ in 0..15 {
+            app.settings_char('X');
+        }
+
+        if let Screen::Settings { handle_input, .. } = &app.screen {
+            assert!(handle_input.len() <= 12);
+        }
+    }
+
+    #[test]
+    fn test_menu_select_settings() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Settings (index 4)
+        for _ in 0..4 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        assert!(matches!(app.screen, Screen::Settings { editing: true, .. }));
+    }
+
+    #[test]
+    fn test_menu_select_rankings() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Rankings (index 3)
+        for _ in 0..3 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        assert!(matches!(app.screen, Screen::Rankings { .. }));
+    }
+
+    #[test]
+    fn test_rankings_scroll() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Rankings
+        for _ in 0..3 {
+            app.menu_down();
+        }
+        app.menu_select();
+
+        // Scroll up at 0 stays at 0
+        app.rankings_up();
+        if let Screen::Rankings { scroll_offset, .. } = &app.screen {
+            assert_eq!(*scroll_offset, 0);
+        }
+
+        // Scroll down (may not go anywhere if no players, but shouldn't panic)
+        app.rankings_down();
+    }
+
+    #[test]
+    fn test_map_reject_reason_round_ended() {
+        let result = AppCoordinator::map_reject_reason_pub(ClaimRejectReason::RoundEnded);
+        // RoundEnded maps to TooShort
+        assert_eq!(result, super::super::state::MissReason::TooShort);
+    }
+
+    #[test]
+    fn test_go_to_menu_preserves_handle() {
+        let mut app = AppCoordinator::new();
+
+        // Set a custom handle
+        app.menu_tab();
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+        app.menu_char('M');
+        app.menu_char('Y');
+        app.menu_tab();
+
+        // Go to solo practice
+        app.menu_down();
+        app.menu_down();
+        app.menu_select();
+        assert!(matches!(app.screen, Screen::Playing { .. }));
+
+        // Go back to menu
+        app.go_to_menu();
+
+        if let Screen::Menu { handle, .. } = &app.screen {
+            // Should still have some handle
+            assert!(!handle.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_menu_char_ignored_when_not_editing() {
+        let mut app = AppCoordinator::new();
+
+        let original_input = match &app.screen {
+            Screen::Menu { handle_input, .. } => handle_input.clone(),
+            _ => panic!(),
+        };
+
+        // Type without entering edit mode
+        app.menu_char('X');
+
+        if let Screen::Menu { handle_input, .. } = &app.screen {
+            assert_eq!(*handle_input, original_input);
+        }
+    }
+
+    #[test]
+    fn test_menu_backspace_ignored_when_not_editing() {
+        let mut app = AppCoordinator::new();
+
+        let original_input = match &app.screen {
+            Screen::Menu { handle_input, .. } => handle_input.clone(),
+            _ => panic!(),
+        };
+
+        // Backspace without entering edit mode
+        app.menu_backspace();
+
+        if let Screen::Menu { handle_input, .. } = &app.screen {
+            assert_eq!(*handle_input, original_input);
+        }
+    }
+
+    #[test]
+    fn test_solo_practice_has_letters() {
+        let mut app = AppCoordinator::new();
+
+        // Navigate to Solo Practice (index 2)
+        app.menu_down();
+        app.menu_down();
+        app.menu_select();
+
+        if let Screen::Playing { app: game_app, is_host, hosted_lobby, joined_lobby, .. } = &app.screen {
+            assert!(is_host);
+            assert!(hosted_lobby.is_none());
+            assert!(joined_lobby.is_none());
+            assert!(!game_app.letters.is_empty());
+            assert!(!game_app.is_round_over());
+        } else {
+            panic!("Expected Playing screen");
+        }
+    }
+
+    #[test]
+    fn test_enter_during_editing_finishes_editing() {
+        let mut app = AppCoordinator::new();
+
+        // Enter editing mode
+        app.menu_tab();
+
+        // Clear and type
+        for _ in 0..20 {
+            app.menu_backspace();
+        }
+        app.menu_char('H');
+        app.menu_char('I');
+
+        // Press Enter while editing - should finish editing, not select menu item
+        app.menu_select();
+
+        if let Screen::Menu { editing_handle, handle, .. } = &app.screen {
+            assert!(!*editing_handle);
+            assert_eq!(handle, "HI");
+        }
+    }
 }
