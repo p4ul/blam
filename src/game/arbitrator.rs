@@ -319,4 +319,56 @@ mod tests {
         let r2 = arb.try_claim("dogs", "Bob");
         assert!(matches!(r2, ClaimResult::Accepted { points: 4, .. }));
     }
+
+    #[test]
+    fn test_claim_after_end_all_rejected() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        // Claim before end
+        let r1 = arb.try_claim("cat", "Alice");
+        assert!(matches!(r1, ClaimResult::Accepted { .. }));
+
+        arb.end_round();
+
+        // Multiple claims after end - all rejected
+        let r2 = arb.try_claim("dog", "Alice");
+        let r3 = arb.try_claim("tan", "Bob");
+        assert!(matches!(r2, ClaimResult::RoundEnded));
+        assert!(matches!(r3, ClaimResult::RoundEnded));
+    }
+
+    #[test]
+    fn test_empty_players_list() {
+        let arb = RoundArbitrator::new(test_letters(), &[]);
+        assert!(arb.is_active());
+        let scores = arb.scores();
+        assert!(scores.is_empty());
+    }
+
+    #[test]
+    fn test_unknown_player_can_claim() {
+        let mut arb = RoundArbitrator::new(test_letters(), &test_players());
+
+        // Player not in initial list can still claim
+        let r = arb.try_claim("cat", "Charlie");
+        assert!(matches!(r, ClaimResult::Accepted { .. }));
+        assert_eq!(arb.player_score("Charlie"), 3);
+    }
+
+    #[test]
+    fn test_scores_after_no_claims() {
+        let arb = RoundArbitrator::new(test_letters(), &test_players());
+        let scores = arb.scores();
+        assert_eq!(scores.len(), 2);
+        // All scores should be 0
+        for (_name, score) in &scores {
+            assert_eq!(*score, 0);
+        }
+    }
+
+    #[test]
+    fn test_claimed_words_empty_initially() {
+        let arb = RoundArbitrator::new(test_letters(), &test_players());
+        assert!(arb.claimed_words().is_empty());
+    }
 }

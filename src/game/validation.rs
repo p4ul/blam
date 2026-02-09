@@ -204,4 +204,62 @@ mod tests {
             "Not in dictionary"
         );
     }
+
+    #[test]
+    fn test_is_valid_method() {
+        assert!(ValidationResult::Valid.is_valid());
+        assert!(!ValidationResult::TooShort { length: 0 }.is_valid());
+        assert!(!ValidationResult::InvalidLetters { missing: vec!['X'] }.is_valid());
+        assert!(!ValidationResult::NotInDictionary.is_valid());
+    }
+
+    #[test]
+    fn test_missing_letters_deduplicated() {
+        // "ZZZ" needs three Z's but rack has none - should report Z only once
+        let rack = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'];
+        let result = validate_word("zzz", &rack);
+        match result {
+            ValidationResult::InvalidLetters { missing } => {
+                assert_eq!(missing, vec!['Z']);
+            }
+            _ => panic!("Expected InvalidLetters, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_case_insensitive_validation() {
+        let rack = ['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'];
+        // All these forms should validate the same way
+        assert_eq!(validate_word("cat", &rack), ValidationResult::Valid);
+        assert_eq!(validate_word("Cat", &rack), ValidationResult::Valid);
+        assert_eq!(validate_word("cAt", &rack), ValidationResult::Valid);
+    }
+
+    #[test]
+    fn test_word_uses_all_rack_letters() {
+        // A small rack where a word uses every letter
+        let rack = ['A', 'T'];
+        assert_eq!(validate_word("at", &rack), ValidationResult::Valid);
+    }
+
+    #[test]
+    fn test_single_letter_valid_word() {
+        let rack = ['A', 'I', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'J', 'K', 'L'];
+        // "a" and "i" are valid English words
+        assert_eq!(validate_word("a", &rack), ValidationResult::Valid);
+        assert_eq!(validate_word("i", &rack), ValidationResult::Valid);
+    }
+
+    #[test]
+    fn test_validation_result_clone_eq() {
+        let v1 = ValidationResult::Valid;
+        let v2 = v1.clone();
+        assert_eq!(v1, v2);
+
+        let v3 = ValidationResult::InvalidLetters { missing: vec!['X'] };
+        let v4 = v3.clone();
+        assert_eq!(v3, v4);
+
+        assert_ne!(v1, v3);
+    }
 }

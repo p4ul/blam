@@ -885,4 +885,242 @@ mod tests {
         assert_eq!(app.scoreboard[0].name, "Bob"); // Sorted by score
         assert_eq!(app.scoreboard[1].name, "Alice");
     }
+
+    #[test]
+    fn test_clear_input() {
+        let mut app = App::new();
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_char('A');
+        app.on_char('B');
+        assert_eq!(app.input, "AB");
+
+        app.clear_input();
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn test_on_char_clears_feedback() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+
+        // Generate feedback
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert!(!app.feedback.is_empty());
+
+        // Typing should clear feedback
+        app.on_char('D');
+        assert!(app.feedback.is_empty());
+    }
+
+    #[test]
+    fn test_on_backspace_clears_feedback() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+
+        // Generate feedback
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert!(!app.feedback.is_empty());
+
+        // Type and then backspace should clear feedback
+        app.on_char('X');
+        app.on_backspace();
+        assert!(app.feedback.is_empty());
+    }
+
+    #[test]
+    fn test_empty_submit_does_nothing() {
+        let mut app = App::new();
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        // Submit with empty input
+        app.on_submit();
+
+        assert_eq!(app.score, 0);
+        assert!(app.feedback.is_empty());
+        assert!(app.claimed_words().is_empty());
+        assert!(app.missed_words().is_empty());
+    }
+
+    #[test]
+    fn test_set_letters() {
+        let mut app = App::new();
+        assert!(app.letters.is_empty());
+
+        app.set_letters(vec!['X', 'Y', 'Z']);
+        assert_eq!(app.letters, vec!['X', 'Y', 'Z']);
+    }
+
+    #[test]
+    fn test_set_player_name() {
+        let mut app = App::new();
+        assert!(app.player_name.is_none());
+
+        app.set_player_name("Alice".into());
+        assert_eq!(app.player_name, Some("Alice".into()));
+    }
+
+    #[test]
+    fn test_quit() {
+        let mut app = App::new();
+        assert!(!app.should_quit);
+
+        app.quit();
+        assert!(app.should_quit);
+    }
+
+    #[test]
+    fn test_round_summary_with_already_claimed() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T'], 60);
+
+        // Add an already-claimed miss
+        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".into() });
+
+        let summary = app.round_summary();
+        assert_eq!(summary.already_claimed.len(), 1);
+        assert_eq!(summary.already_claimed[0], "CAT");
+    }
+
+    #[test]
+    fn test_round_summary_miss_count_excludes_already_claimed() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+
+        // Invalid letters miss
+        app.on_char('Z');
+        app.on_char('A');
+        app.on_char('P');
+        app.on_submit();
+
+        // Already claimed (via multiplayer rejection)
+        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".into() });
+
+        let summary = app.round_summary();
+        // miss_count only counts too_short + invalid_letters + not_in_dictionary
+        assert_eq!(summary.miss_count(), 1);
+        assert_eq!(summary.already_claimed.len(), 1);
+    }
+
+    #[test]
+    fn test_claim_feed_ordering() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+        app.on_claim_accepted("BAC".into(), "Bob".into(), 3);
+
+        assert_eq!(app.claim_feed.len(), 2);
+        assert_eq!(app.claim_feed[0].player_name, "Alice");
+        assert_eq!(app.claim_feed[1].player_name, "Bob");
+    }
+
+    #[test]
+    fn test_on_claim_accepted_updates_own_feedback() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+        assert_eq!(app.feedback, "OK +3 (CAB)");
+    }
+
+    #[test]
+    fn test_on_claim_accepted_no_feedback_for_other() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        // Clear any existing feedback
+        app.feedback.clear();
+
+        app.on_claim_accepted("CAB".into(), "Bob".into(), 3);
+        // Feedback should not change for other player's claims
+        assert!(app.feedback.is_empty());
+    }
+
+    #[test]
+    fn test_miss_reason_already_claimed_label() {
+        let reason = MissReason::AlreadyClaimed { by: "Alice".into() };
+        assert_eq!(reason.label(), "Already Claimed");
+    }
+
+    #[test]
+    fn test_claimed_word_struct() {
+        let cw = ClaimedWord {
+            word: "CAT".to_string(),
+            points: 3,
+        };
+        assert_eq!(cw.word, "CAT");
+        assert_eq!(cw.points, 3);
+
+        let cw2 = cw.clone();
+        assert_eq!(cw, cw2);
+    }
+
+    #[test]
+    fn test_missed_word_struct() {
+        let mw = MissedWord {
+            word: "XYZ".to_string(),
+            reason: MissReason::NotInDictionary,
+        };
+        assert_eq!(mw.word, "XYZ");
+        assert_eq!(mw.reason, MissReason::NotInDictionary);
+    }
+
+    #[test]
+    fn test_player_score_struct() {
+        let ps = PlayerScore {
+            name: "Alice".into(),
+            score: 42,
+        };
+        assert_eq!(ps.name, "Alice");
+        assert_eq!(ps.score, 42);
+
+        let ps2 = ps.clone();
+        assert_eq!(ps, ps2);
+    }
+
+    #[test]
+    fn test_claim_feed_entry_struct() {
+        let entry = ClaimFeedEntry {
+            player_name: "Bob".into(),
+            word: "DOG".into(),
+            points: 3,
+        };
+        assert_eq!(entry.player_name, "Bob");
+        assert_eq!(entry.word, "DOG");
+        assert_eq!(entry.points, 3);
+
+        let entry2 = entry.clone();
+        assert_eq!(entry, entry2);
+    }
+
+    #[test]
+    fn test_multiple_rounds_score_reset() {
+        let mut app = App::new();
+
+        // Round 1
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert_eq!(app.score, 3);
+
+        // Round 2 - score resets
+        app.start_round(vec!['D', 'O', 'G', 'C', 'A', 'T', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        assert_eq!(app.score, 0);
+        assert!(app.claimed_words().is_empty());
+    }
 }

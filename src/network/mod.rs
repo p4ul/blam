@@ -350,4 +350,95 @@ mod tests {
         assert_eq!(tracker.get("peer-1").unwrap().handle, "NewName");
         assert!(tracker.get("peer-1").unwrap().lobby_name.is_some());
     }
+
+    #[test]
+    fn test_peer_tracker_multiple_peers() {
+        let mut tracker = PeerTracker::new();
+
+        for i in 0..5 {
+            let peer = PeerInfo {
+                actor_id: format!("peer-{}", i),
+                handle: format!("Player{}", i),
+                lobby_name: None,
+                version: "1".to_string(),
+                hostname: format!("peer{}.local.", i),
+                addresses: vec![],
+                port: 55333 + i as u16,
+            };
+            tracker.update(peer);
+        }
+
+        assert_eq!(tracker.count(), 5);
+
+        // Remove one
+        let removed = tracker.remove("peer-2");
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().handle, "Player2");
+        assert_eq!(tracker.count(), 4);
+
+        // Remove nonexistent
+        let removed = tracker.remove("peer-99");
+        assert!(removed.is_none());
+        assert_eq!(tracker.count(), 4);
+    }
+
+    #[test]
+    fn test_peer_tracker_default() {
+        let tracker = PeerTracker::default();
+        assert_eq!(tracker.count(), 0);
+    }
+
+    #[test]
+    fn test_peer_tracker_get_nonexistent() {
+        let tracker = PeerTracker::new();
+        assert!(tracker.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_peer_tracker_peers_iterator() {
+        let mut tracker = PeerTracker::new();
+
+        let peer = PeerInfo {
+            actor_id: "peer-1".to_string(),
+            handle: "Player1".to_string(),
+            lobby_name: None,
+            version: "1".to_string(),
+            hostname: "peer1.local.".to_string(),
+            addresses: vec![],
+            port: 55333,
+        };
+        tracker.update(peer);
+
+        let peers: Vec<&PeerInfo> = tracker.peers().collect();
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].handle, "Player1");
+    }
+
+    #[test]
+    fn test_peer_info_with_addresses() {
+        use std::net::IpAddr;
+
+        let peer = PeerInfo {
+            actor_id: "peer-1".to_string(),
+            handle: "Player1".to_string(),
+            lobby_name: Some("TestLobby".to_string()),
+            version: "1".to_string(),
+            hostname: "peer1.local.".to_string(),
+            addresses: vec![
+                "127.0.0.1".parse::<IpAddr>().unwrap(),
+                "192.168.1.1".parse::<IpAddr>().unwrap(),
+            ],
+            port: 55333,
+        };
+
+        assert_eq!(peer.addresses.len(), 2);
+        assert_eq!(peer.port, 55333);
+        assert_eq!(peer.lobby_name.as_deref(), Some("TestLobby"));
+    }
+
+    #[test]
+    fn test_protocol_version_is_set() {
+        assert!(!PROTOCOL_VERSION.is_empty());
+        assert_eq!(PROTOCOL_VERSION, "1");
+    }
 }

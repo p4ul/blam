@@ -196,4 +196,32 @@ mod tests {
             assert!(c.is_ascii_uppercase());
         }
     }
+
+    #[test]
+    fn test_vowel_count_accurate() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+        let rack = LetterRack::generate_with_rng(&mut rng);
+
+        let expected_vowels = rack.letters().iter().filter(|&&c| {
+            matches!(c, 'A' | 'E' | 'I' | 'O' | 'U')
+        }).count();
+
+        assert_eq!(rack.vowel_count(), expected_vowels);
+    }
+
+    #[test]
+    fn test_rack_len_matches_letters() {
+        let rack = LetterRack::generate();
+        assert_eq!(rack.len(), rack.letters().len());
+        assert_eq!(rack.len(), rack.as_string().len());
+    }
+
+    #[test]
+    fn test_rack_clone() {
+        let rack = LetterRack::generate();
+        let cloned = rack.clone();
+        assert_eq!(rack.as_string(), cloned.as_string());
+        assert_eq!(rack.len(), cloned.len());
+    }
 }

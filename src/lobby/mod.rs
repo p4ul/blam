@@ -870,4 +870,187 @@ mod tests {
         assert!(player.is_local);
         assert!(player.is_host);
     }
+
+    #[test]
+    fn test_player_not_host_not_local() {
+        let player = Player {
+            name: "Bob".to_string(),
+            ready: false,
+            is_local: false,
+            is_host: false,
+        };
+        assert_eq!(player.name, "Bob");
+        assert!(!player.ready);
+        assert!(!player.is_local);
+        assert!(!player.is_host);
+    }
+
+    #[test]
+    fn test_lobby_state_all_variants() {
+        let waiting = LobbyState::Waiting;
+        let countdown = LobbyState::Countdown(3);
+        let starting = LobbyState::Starting;
+
+        assert_eq!(waiting, LobbyState::Waiting);
+        assert_eq!(countdown, LobbyState::Countdown(3));
+        assert_eq!(starting, LobbyState::Starting);
+
+        // Different variants aren't equal
+        assert_ne!(waiting, starting);
+        assert_ne!(countdown, waiting);
+        assert_ne!(starting, countdown);
+    }
+
+    #[test]
+    fn test_lobby_event_player_joined() {
+        let event = LobbyEvent::PlayerJoined("Alice".to_string());
+        if let LobbyEvent::PlayerJoined(name) = event {
+            assert_eq!(name, "Alice");
+        } else {
+            panic!("Expected PlayerJoined");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_player_left() {
+        let event = LobbyEvent::PlayerLeft("Bob".to_string());
+        if let LobbyEvent::PlayerLeft(name) = event {
+            assert_eq!(name, "Bob");
+        } else {
+            panic!("Expected PlayerLeft");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_claim_accepted() {
+        let event = LobbyEvent::ClaimAccepted {
+            word: "CAT".to_string(),
+            player_name: "Alice".to_string(),
+            points: 3,
+        };
+        if let LobbyEvent::ClaimAccepted { word, player_name, points } = event {
+            assert_eq!(word, "CAT");
+            assert_eq!(player_name, "Alice");
+            assert_eq!(points, 3);
+        } else {
+            panic!("Expected ClaimAccepted");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_claim_rejected() {
+        let event = LobbyEvent::ClaimRejected {
+            word: "XYZ".to_string(),
+            reason: ClaimRejectReason::NotInDictionary,
+        };
+        if let LobbyEvent::ClaimRejected { word, reason } = event {
+            assert_eq!(word, "XYZ");
+            assert_eq!(reason, ClaimRejectReason::NotInDictionary);
+        } else {
+            panic!("Expected ClaimRejected");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_round_start() {
+        let event = LobbyEvent::RoundStart {
+            letters: vec!['A', 'B', 'C'],
+            duration: 60,
+        };
+        if let LobbyEvent::RoundStart { letters, duration } = event {
+            assert_eq!(letters, vec!['A', 'B', 'C']);
+            assert_eq!(duration, 60);
+        } else {
+            panic!("Expected RoundStart");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_round_end() {
+        let event = LobbyEvent::RoundEnd;
+        assert!(matches!(event, LobbyEvent::RoundEnd));
+    }
+
+    #[test]
+    fn test_lobby_event_disconnected() {
+        let event = LobbyEvent::Disconnected;
+        assert!(matches!(event, LobbyEvent::Disconnected));
+    }
+
+    #[test]
+    fn test_lobby_event_score_update() {
+        let event = LobbyEvent::ScoreUpdate {
+            scores: vec![("Alice".to_string(), 10), ("Bob".to_string(), 5)],
+        };
+        if let LobbyEvent::ScoreUpdate { scores } = event {
+            assert_eq!(scores.len(), 2);
+            assert_eq!(scores[0].0, "Alice");
+            assert_eq!(scores[0].1, 10);
+        } else {
+            panic!("Expected ScoreUpdate");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_countdown() {
+        let event = LobbyEvent::Countdown {
+            letters: vec!['B', 'L', 'A', 'M'],
+            duration: 60,
+            countdown: 3,
+        };
+        if let LobbyEvent::Countdown { letters, duration, countdown } = event {
+            assert_eq!(letters.len(), 4);
+            assert_eq!(duration, 60);
+            assert_eq!(countdown, 3);
+        } else {
+            panic!("Expected Countdown");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_word_claimed() {
+        let event = LobbyEvent::WordClaimed {
+            word: "BLAM".to_string(),
+            player_name: "Alice".to_string(),
+            points: 4,
+            actor_id: "test-123".to_string(),
+            timestamp_ms: 1000000,
+            claim_sequence: 1,
+        };
+        if let LobbyEvent::WordClaimed { word, player_name, points, actor_id, timestamp_ms, claim_sequence } = event {
+            assert_eq!(word, "BLAM");
+            assert_eq!(player_name, "Alice");
+            assert_eq!(points, 4);
+            assert_eq!(actor_id, "test-123");
+            assert_eq!(timestamp_ms, 1000000);
+            assert_eq!(claim_sequence, 1);
+        } else {
+            panic!("Expected WordClaimed");
+        }
+    }
+
+    #[test]
+    fn test_lobby_name_format() {
+        // Verify names follow ADJ-NOUN format with uppercase
+        for _ in 0..20 {
+            let name = generate_lobby_name();
+            let parts: Vec<&str> = name.split('-').collect();
+            assert_eq!(parts.len(), 2);
+            assert!(parts[0].chars().all(|c| c.is_ascii_uppercase()));
+            assert!(parts[1].chars().all(|c| c.is_ascii_uppercase()));
+        }
+    }
+
+    #[test]
+    fn test_player_clone() {
+        let player = Player {
+            name: "Test".to_string(),
+            ready: true,
+            is_local: false,
+            is_host: false,
+        };
+        let cloned = player.clone();
+        assert_eq!(player.name, cloned.name);
+        assert_eq!(player.ready, cloned.ready);
+    }
 }
