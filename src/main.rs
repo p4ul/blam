@@ -165,8 +165,7 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
         },
         Screen::HostLobby { lobby, countdown } => match code {
             KeyCode::Esc => {
-                // TODO: Clean shutdown of lobby
-                coordinator.go_to_menu();
+                coordinator.quit_hosting();
             }
             KeyCode::Enter => {
                 // Only start countdown if we're not already counting down
@@ -196,11 +195,7 @@ fn handle_key(coordinator: &mut AppCoordinator, code: KeyCode) {
                 if app.is_round_over() {
                     coordinator.go_to_menu();
                 } else if hosted_lobby.is_some() {
-                    // Host can quit mid-game - end the round for all players
-                    if let Some(lobby) = hosted_lobby {
-                        lobby.end_round();
-                    }
-                    coordinator.go_to_menu();
+                    coordinator.quit_hosting();
                 }
             }
             KeyCode::Enter => {

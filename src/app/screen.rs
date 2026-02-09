@@ -173,6 +173,30 @@ impl AppCoordinator {
         };
     }
 
+    /// Quit hosting: properly shut down the lobby and return to menu
+    pub fn quit_hosting(&mut self) {
+        let handle = self.get_current_handle();
+        let old_screen = std::mem::replace(
+            &mut self.screen,
+            Screen::Menu {
+                selected: 0,
+                handle: handle.clone(),
+                handle_input: handle,
+                editing_handle: false,
+            },
+        );
+        match old_screen {
+            Screen::HostLobby { lobby, .. } => {
+                let _ = lobby.shutdown();
+            }
+            Screen::Playing { hosted_lobby: Some(mut lobby), .. } => {
+                lobby.end_round();
+                let _ = lobby.shutdown();
+            }
+            _ => {}
+        }
+    }
+
     /// Get the current player handle
     fn get_current_handle(&self) -> String {
         match &self.screen {
