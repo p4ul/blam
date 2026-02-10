@@ -1,9 +1,7 @@
 # BLAM! build system
-# Ensures correct Rust toolchain is used regardless of system PATH
+# Ensures the pinned Rust toolchain is used regardless of system PATH
 
-CARGO := $(HOME)/.cargo/bin/cargo
-RUSTC := $(HOME)/.cargo/bin/rustc
-export RUSTC
+CARGO := ./scripts/cargo.sh
 
 .PHONY: build release test run clean
 
