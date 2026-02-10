@@ -172,6 +172,18 @@ impl App {
 
         let word = self.input.clone();
         let word_upper = word.to_uppercase();
+
+        // Check if already claimed (prevents duplicate claims in solo mode)
+        if self.claimed_words.iter().any(|cw| cw.word == word_upper) {
+            self.feedback = "ALREADY CLAIMED".to_string();
+            self.missed_words.push(MissedWord {
+                word: word_upper,
+                reason: MissReason::AlreadyClaimed { by: "you".to_string() },
+            });
+            self.input.clear();
+            return;
+        }
+
         let result = validate_word(&word, &self.letters);
 
         match result {
@@ -1104,6 +1116,55 @@ mod tests {
 
         let entry2 = entry.clone();
         assert_eq!(entry, entry2);
+    }
+
+    #[test]
+    fn test_duplicate_word_rejected_in_solo() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+
+        // Claim "CAT" first time - should succeed
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert_eq!(app.score, 3);
+        assert_eq!(app.claimed_words().len(), 1);
+
+        // Try to claim "CAT" again - should be rejected
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert_eq!(app.score, 3); // Score unchanged
+        assert_eq!(app.claimed_words().len(), 1); // Still only one claim
+        assert_eq!(app.feedback, "ALREADY CLAIMED");
+        assert_eq!(app.missed_words().len(), 1);
+        assert!(matches!(
+            &app.missed_words()[0].reason,
+            MissReason::AlreadyClaimed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_duplicate_word_case_insensitive_solo() {
+        let mut app = App::new();
+        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+
+        // Claim "CAT"
+        app.on_char('C');
+        app.on_char('A');
+        app.on_char('T');
+        app.on_submit();
+        assert_eq!(app.score, 3);
+
+        // Try "cat" (lowercase) - input is uppercased by on_char in main.rs,
+        // but on_submit handles raw input. Both should be caught.
+        app.on_char('c');
+        app.on_char('a');
+        app.on_char('t');
+        app.on_submit();
+        assert_eq!(app.score, 3); // Score unchanged
     }
 
     #[test]
