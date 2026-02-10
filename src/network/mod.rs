@@ -62,6 +62,38 @@ pub struct ServiceDiscovery {
     registered_instance: Option<String>,
 }
 
+fn build_service_info(
+    actor_id: &str,
+    handle: &str,
+    lobby_name: Option<&str>,
+    port: u16,
+) -> Result<ServiceInfo, String> {
+    let mut properties = HashMap::new();
+    properties.insert("version".to_string(), PROTOCOL_VERSION.to_string());
+    properties.insert("handle".to_string(), handle.to_string());
+    properties.insert("actor_id".to_string(), actor_id.to_string());
+    if let Some(lobby) = lobby_name {
+        properties.insert("lobby_name".to_string(), lobby.to_string());
+    }
+
+    // Instance name is the actor_id (must be unique on the network).
+    let instance_name = actor_id;
+
+    // Hostname for SRV/A records. We keep it deterministic per instance.
+    let hostname = format!("{}.local.", actor_id);
+
+    ServiceInfo::new(
+        SERVICE_TYPE,
+        instance_name,
+        &hostname,
+        (), // No explicit IPs; daemon will populate local interface addrs.
+        port,
+        properties,
+    )
+    .map(|service| service.enable_addr_auto())
+    .map_err(|e| format!("Failed to create service info: {}", e))
+}
+
 impl ServiceDiscovery {
     /// Create a new service discovery instance
     ///
@@ -89,41 +121,13 @@ impl ServiceDiscovery {
         lobby_name: Option<&str>,
         port: u16,
     ) -> Result<(), String> {
-        // Build TXT record properties
-        let mut properties: Vec<(&str, &str)> = vec![
-            ("version", PROTOCOL_VERSION),
-            ("handle", handle),
-            ("actor_id", &self.our_actor_id),
-        ];
-
-        // Add lobby_name to a temporary variable so it lives long enough
-        let lobby_owned: String;
-        if let Some(lobby) = lobby_name {
-            lobby_owned = lobby.to_string();
-            properties.push(("lobby_name", &lobby_owned));
-        }
-
-        // Instance name is the actor_id (must be unique on the network)
-        let instance_name = &self.our_actor_id;
-
-        // Build the hostname - use actor_id as subdomain
-        let hostname = format!("{}.local.", self.our_actor_id);
-
-        let service_info = ServiceInfo::new(
-            SERVICE_TYPE,
-            instance_name,
-            &hostname,
-            (),  // Let the system determine our IP
-            port,
-            &properties[..],
-        )
-        .map_err(|e| format!("Failed to create service info: {}", e))?;
+        let service_info = build_service_info(&self.our_actor_id, handle, lobby_name, port)?;
 
         self.daemon
             .register(service_info)
             .map_err(|e| format!("Failed to register service: {}", e))?;
 
-        self.registered_instance = Some(instance_name.to_string());
+        self.registered_instance = Some(self.our_actor_id.clone());
         Ok(())
     }
 
@@ -440,5 +444,29 @@ mod tests {
     fn test_protocol_version_is_set() {
         assert!(!PROTOCOL_VERSION.is_empty());
         assert_eq!(PROTOCOL_VERSION, "1");
+    }
+
+    #[test]
+    fn test_build_service_info_enables_addr_auto() {
+        let info =
+            build_service_info("blam-test-1234", "Alice", Some("LAN-ORBIT"), 55333).unwrap();
+
+        assert!(info.is_addr_auto());
+        assert_eq!(info.get_fullname(), "blam-test-1234._blam._tcp.local.");
+        assert_eq!(info.get_hostname(), "blam-test-1234.local.");
+        assert_eq!(info.get_port(), 55333);
+        assert_eq!(info.get_property_val_str("actor_id"), Some("blam-test-1234"));
+        assert_eq!(info.get_property_val_str("handle"), Some("Alice"));
+        assert_eq!(info.get_property_val_str("lobby_name"), Some("LAN-ORBIT"));
+    }
+
+    #[test]
+    fn test_build_service_info_without_lobby_name() {
+        let info = build_service_info("blam-test-5678", "Bob", None, 55334).unwrap();
+
+        assert!(info.is_addr_auto());
+        assert_eq!(info.get_property_val_str("actor_id"), Some("blam-test-5678"));
+        assert_eq!(info.get_property_val_str("handle"), Some("Bob"));
+        assert_eq!(info.get_property_val_str("lobby_name"), None);
     }
 }
