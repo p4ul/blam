@@ -39,11 +39,29 @@ impl ClaimRejectReason {
     }
 }
 
+/// Reason a join request was rejected
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinRejectReason {
+    /// Lobby has reached maximum player capacity
+    LobbyFull,
+}
+
+impl JoinRejectReason {
+    /// Get a user-friendly message for the rejection
+    pub fn message(&self) -> &'static str {
+        match self {
+            JoinRejectReason::LobbyFull => "Lobby is full",
+        }
+    }
+}
+
 /// Messages sent between peers
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
     /// Announce player joining
     Join { player_name: String },
+    /// Host rejects a join request
+    JoinRejected { reason: JoinRejectReason },
     /// Player is leaving
     Leave { player_name: String },
     /// Client requests to claim a word (client -> host)
@@ -157,6 +175,12 @@ impl Message {
         match self {
             Message::Join { player_name } => {
                 format!(r#"{{"type":"join","player_name":"{}"}}"#, escape_json(player_name))
+            }
+            Message::JoinRejected { reason } => {
+                let reason = match reason {
+                    JoinRejectReason::LobbyFull => "lobby_full",
+                };
+                format!(r#"{{"type":"join_rejected","reason":"{}"}}"#, reason)
             }
             Message::Leave { player_name } => {
                 format!(r#"{{"type":"leave","player_name":"{}"}}"#, escape_json(player_name))
@@ -393,6 +417,18 @@ impl Message {
                 let player_name = get_str("player_name")
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing player_name"))?;
                 Ok(Message::Join { player_name })
+            }
+            "join_rejected" => {
+                let reason = get_str("reason")
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing reason"))?;
+                let reason = match reason.as_str() {
+                    "lobby_full" => JoinRejectReason::LobbyFull,
+                    _ => return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("unknown reason: {}", reason),
+                    )),
+                };
+                Ok(Message::JoinRejected { reason })
             }
             "leave" => {
                 let player_name = get_str("player_name")
@@ -761,6 +797,17 @@ mod tests {
     #[test]
     fn test_join_roundtrip() {
         let msg = Message::Join { player_name: "Alice".to_string() };
+        let bytes = msg.to_bytes();
+        let (parsed, len) = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(parsed, msg);
+        assert_eq!(len, bytes.len());
+    }
+
+    #[test]
+    fn test_join_rejected_roundtrip() {
+        let msg = Message::JoinRejected {
+            reason: JoinRejectReason::LobbyFull,
+        };
         let bytes = msg.to_bytes();
         let (parsed, len) = Message::from_bytes(&bytes).unwrap();
         assert_eq!(parsed, msg);

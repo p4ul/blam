@@ -514,6 +514,12 @@ impl AppCoordinator {
                             };
                             return;
                         }
+                        LobbyEvent::JoinRejected { reason } => {
+                            self.screen = Screen::Error {
+                                message: format!("Failed to join lobby: {}", reason.message()),
+                            };
+                            return;
+                        }
                         _ => {}
                     }
                 }

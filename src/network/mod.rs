@@ -13,7 +13,7 @@ pub mod protocol;
 pub mod server;
 
 pub use client::Client;
-pub use protocol::{ClaimRejectReason, Message};
+pub use protocol::{ClaimRejectReason, JoinRejectReason, Message};
 pub use server::{Server, ServerEvent};
 
 use mdns_sd::{ServiceDaemon, ServiceEvent, ServiceInfo};

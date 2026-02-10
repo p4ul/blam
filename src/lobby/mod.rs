@@ -10,8 +10,8 @@
 
 use crate::game::arbitrator::{ClaimResult, RoundArbitrator};
 use crate::network::{
-    ClaimRejectReason, Client, DiscoveryEvent, Message, PeerInfo, PeerTracker, Server, ServerEvent,
-    ServiceDiscovery,
+    ClaimRejectReason, Client, DiscoveryEvent, JoinRejectReason, Message, PeerInfo, PeerTracker,
+    Server, ServerEvent, ServiceDiscovery,
 };
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -56,6 +56,8 @@ pub enum LobbyEvent {
     PlayerJoined(String),
     /// A player left the lobby
     PlayerLeft(String),
+    /// Host rejected our join request
+    JoinRejected { reason: JoinRejectReason },
     /// Countdown to round start
     Countdown {
         letters: Vec<char>,
@@ -222,7 +224,12 @@ impl HostedLobby {
                         Message::Join { player_name } => {
                             // Check if we're at capacity
                             if self.players.len() >= MAX_PLAYERS {
-                                // TODO: Send rejection message
+                                let _ = self.server.send_to(
+                                    from,
+                                    &Message::JoinRejected {
+                                        reason: JoinRejectReason::LobbyFull,
+                                    },
+                                );
                                 continue;
                             }
 
@@ -673,6 +680,9 @@ impl JoinedLobby {
                     self.players.push(player);
                     events.push(LobbyEvent::PlayerJoined(player_name));
                 }
+                Message::JoinRejected { reason } => {
+                    events.push(LobbyEvent::JoinRejected { reason });
+                }
                 Message::Leave { player_name } => {
                     self.players.retain(|p| p.name != player_name);
                     events.push(LobbyEvent::PlayerLeft(player_name));
@@ -918,6 +928,19 @@ mod tests {
             assert_eq!(name, "Bob");
         } else {
             panic!("Expected PlayerLeft");
+        }
+    }
+
+    #[test]
+    fn test_lobby_event_join_rejected() {
+        let event = LobbyEvent::JoinRejected {
+            reason: JoinRejectReason::LobbyFull,
+        };
+        if let LobbyEvent::JoinRejected { reason } = event {
+            assert_eq!(reason, JoinRejectReason::LobbyFull);
+            assert_eq!(reason.message(), "Lobby is full");
+        } else {
+            panic!("Expected JoinRejected");
         }
     }
 
@@ -1865,6 +1888,13 @@ mod e2e_tests {
 
         thread::sleep(Duration::from_millis(200));
         lobby.poll();
+
+        thread::sleep(Duration::from_millis(200));
+        let messages = extra.poll();
+        assert!(messages.iter().any(|m| matches!(
+            m,
+            Message::JoinRejected { reason: JoinRejectReason::LobbyFull }
+        )), "Extra client should receive a lobby-full rejection");
 
         // Should still be at max
         assert!(lobby.player_count() <= MAX_PLAYERS,
