@@ -76,11 +76,28 @@ BLAM! stores your data in the standard app data location:
 
 Your history syncs automatically when you reconnect with previous opponents.
 
+## Releases
+
+Pre-built binaries are available on the [Releases](../../releases) page for:
+
+- **Linux** x86_64
+- **macOS** Apple Silicon (M1/M2/M3/M4)
+- **macOS** Intel x86_64
+
+Download the tarball for your platform, extract, and run:
+
+```bash
+tar xzf blam-macos-arm64.tar.gz
+./blam
+```
+
+Releases are built automatically when a version tag is pushed (`v0.1.0`, etc.).
+
 ## Requirements
 
-- Rust 1.88+ (for building)
 - Terminal with 256-color support
 - Network access for LAN play (mDNS on port 5353, game on port 55333)
+- Rust 1.88+ (only if building from source)
 
 ## License
 
