@@ -2,7 +2,7 @@
 //! Application state management
 
 use crate::game::validation::{validate_word, ValidationResult};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Default round duration in seconds
 pub const DEFAULT_ROUND_DURATION: u32 = 60;
@@ -100,6 +100,8 @@ pub struct App {
     pub round_ended: bool,
     /// Words claimed this round (by the local player)
     claimed_words: Vec<ClaimedWord>,
+    /// Canonical set of all words claimed this round (multiplayer + solo)
+    round_claimed_words: HashSet<String>,
     /// Missed submissions this round
     missed_words: Vec<MissedWord>,
     /// Multiplayer scoreboard (all players)
@@ -123,6 +125,7 @@ impl Default for App {
             time_remaining: DEFAULT_ROUND_DURATION,
             round_ended: false,
             claimed_words: Vec::new(),
+            round_claimed_words: HashSet::new(),
             missed_words: Vec::new(),
             scoreboard: Vec::new(),
             claim_feed: VecDeque::new(),
@@ -174,11 +177,13 @@ impl App {
         let word_upper = word.to_uppercase();
 
         // Check if already claimed (prevents duplicate claims in solo mode)
-        if self.claimed_words.iter().any(|cw| cw.word == word_upper) {
+        if self.round_claimed_words.contains(&word_upper) {
             self.feedback = "ALREADY CLAIMED".to_string();
             self.missed_words.push(MissedWord {
                 word: word_upper,
-                reason: MissReason::AlreadyClaimed { by: "you".to_string() },
+                reason: MissReason::AlreadyClaimed {
+                    by: "you".to_string(),
+                },
             });
             self.input.clear();
             return;
@@ -191,6 +196,7 @@ impl App {
                 let points = word.len() as u32;
                 self.score += points;
                 self.feedback = format!("OK +{} ({})", points, word_upper);
+                self.round_claimed_words.insert(word_upper.clone());
                 self.claimed_words.push(ClaimedWord {
                     word: word_upper,
                     points,
@@ -262,6 +268,7 @@ impl App {
         self.feedback.clear();
         self.round_ended = false;
         self.claimed_words.clear();
+        self.round_claimed_words.clear();
         self.missed_words.clear();
         self.claim_feed.clear();
         // Reset scoreboard scores but keep players
@@ -298,10 +305,18 @@ impl App {
 
     /// Handle a claim accepted from the host (multiplayer)
     pub fn on_claim_accepted(&mut self, word: String, player_name: String, points: u32) {
+        let word_upper = word.to_uppercase();
+
+        // Ignore duplicate accepted events for the same word in this round.
+        // Network retries or replay should not double-award points.
+        if !self.round_claimed_words.insert(word_upper.clone()) {
+            return;
+        }
+
         // Add to claim feed
         self.claim_feed.push_back(ClaimFeedEntry {
             player_name: player_name.clone(),
-            word: word.clone(),
+            word: word_upper.clone(),
             points,
         });
         // Trim feed if too long (O(1) with VecDeque)
@@ -312,9 +327,9 @@ impl App {
         // If it's our claim, update our state
         if self.player_name.as_ref() == Some(&player_name) {
             self.score += points;
-            self.feedback = format!("OK +{} ({})", points, word);
+            self.feedback = format!("OK +{} ({})", points, word_upper);
             self.claimed_words.push(ClaimedWord {
-                word,
+                word: word_upper,
                 points,
             });
         }
@@ -384,7 +399,9 @@ impl App {
                 MissReason::TooShort => summary.too_short.push(miss.word.clone()),
                 MissReason::InvalidLetters => summary.invalid_letters.push(miss.word.clone()),
                 MissReason::NotInDictionary => summary.not_in_dictionary.push(miss.word.clone()),
-                MissReason::AlreadyClaimed { .. } => summary.already_claimed.push(miss.word.clone()),
+                MissReason::AlreadyClaimed { .. } => {
+                    summary.already_claimed.push(miss.word.clone())
+                }
             }
         }
 
@@ -522,7 +539,10 @@ mod tests {
     fn test_claimed_words_tracked() {
         let mut app = App::new();
         // Use letters that can form "CAT" and "CAB"
-        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'],
+            60,
+        );
 
         // Submit "CAT"
         app.on_char('C');
@@ -548,7 +568,10 @@ mod tests {
     #[test]
     fn test_longest_claimed_word() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'],
+            60,
+        );
 
         // No words claimed yet
         assert!(app.longest_claimed_word().is_none());
@@ -583,7 +606,10 @@ mod tests {
     #[test]
     fn test_missed_words_categorized() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'],
+            60,
+        );
 
         // Invalid letters (Z not in rack)
         app.on_char('Z');
@@ -610,7 +636,10 @@ mod tests {
     #[test]
     fn test_round_summary_totals() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'],
+            60,
+        );
 
         // Valid words
         app.on_char('C');
@@ -638,7 +667,10 @@ mod tests {
     #[test]
     fn test_start_round_clears_tracking() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'B', 'E', 'R', 'S', 'O', 'N', 'D', 'I', 'G'],
+            60,
+        );
 
         // Accumulate some words
         app.on_char('C');
@@ -695,7 +727,10 @@ mod tests {
     #[test]
     fn test_claim_feedback_ok() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
         app.on_char('C');
         app.on_char('A');
         app.on_char('T');
@@ -706,7 +741,10 @@ mod tests {
     #[test]
     fn test_claim_feedback_nope() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'G', 'D', 'O', 'T', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'G', 'D', 'O', 'T', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
         app.on_char('C');
         app.on_char('A');
         app.on_char('G');
@@ -717,7 +755,10 @@ mod tests {
     #[test]
     fn test_claim_feedback_clank() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
         app.on_char('Z');
         app.on_char('A');
         app.on_char('P');
@@ -729,7 +770,12 @@ mod tests {
     fn test_claim_feedback_too_late() {
         let mut app = App::new();
         app.start_round(vec!['C', 'A', 'T'], 60);
-        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".to_string() });
+        app.on_claim_rejected(
+            "CAT".to_string(),
+            MissReason::AlreadyClaimed {
+                by: "Bob".to_string(),
+            },
+        );
         assert_eq!(app.feedback, "TOO LATE (already claimed by Bob)");
     }
 
@@ -819,6 +865,40 @@ mod tests {
     }
 
     #[test]
+    fn test_duplicate_claim_accepted_event_is_ignored_for_owner() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("cab".into(), "Alice".into(), 3);
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+
+        assert_eq!(app.score, 3);
+        assert_eq!(app.claimed_words().len(), 1);
+        assert_eq!(app.claimed_words()[0].word, "CAB");
+        assert_eq!(app.claim_feed.len(), 1);
+        assert_eq!(app.scoreboard[0].score, 3);
+    }
+
+    #[test]
+    fn test_duplicate_claim_accepted_event_is_ignored_for_other_player() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("cab".into(), "Bob".into(), 3);
+        app.on_claim_accepted("CAB".into(), "Bob".into(), 3);
+
+        assert_eq!(app.score, 0);
+        assert_eq!(app.claimed_words().len(), 0);
+        assert_eq!(app.claim_feed.len(), 1);
+        assert_eq!(app.scoreboard[0].name, "Bob");
+        assert_eq!(app.scoreboard[0].score, 3);
+    }
+
+    #[test]
     fn test_other_player_claim_does_not_update_own_score() {
         let mut app = App::new();
         app.set_player_name("Alice".into());
@@ -837,7 +917,10 @@ mod tests {
         app.set_player_name("Alice".into());
         app.start_round(vec!['A', 'B', 'C'], 60);
 
-        app.on_claim_rejected("CAB".into(), MissReason::AlreadyClaimed { by: "Bob".into() });
+        app.on_claim_rejected(
+            "CAB".into(),
+            MissReason::AlreadyClaimed { by: "Bob".into() },
+        );
 
         assert!(app.feedback.contains("Bob"));
         assert_eq!(app.missed_words().len(), 1);
@@ -914,7 +997,10 @@ mod tests {
     #[test]
     fn test_on_char_clears_feedback() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
 
         // Generate feedback
         app.on_char('C');
@@ -931,7 +1017,10 @@ mod tests {
     #[test]
     fn test_on_backspace_clears_feedback() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
 
         // Generate feedback
         app.on_char('C');
@@ -993,7 +1082,10 @@ mod tests {
         app.start_round(vec!['C', 'A', 'T'], 60);
 
         // Add an already-claimed miss
-        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".into() });
+        app.on_claim_rejected(
+            "CAT".to_string(),
+            MissReason::AlreadyClaimed { by: "Bob".into() },
+        );
 
         let summary = app.round_summary();
         assert_eq!(summary.already_claimed.len(), 1);
@@ -1003,7 +1095,10 @@ mod tests {
     #[test]
     fn test_round_summary_miss_count_excludes_already_claimed() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
 
         // Invalid letters miss
         app.on_char('Z');
@@ -1012,7 +1107,10 @@ mod tests {
         app.on_submit();
 
         // Already claimed (via multiplayer rejection)
-        app.on_claim_rejected("CAT".to_string(), MissReason::AlreadyClaimed { by: "Bob".into() });
+        app.on_claim_rejected(
+            "CAT".to_string(),
+            MissReason::AlreadyClaimed { by: "Bob".into() },
+        );
 
         let summary = app.round_summary();
         // miss_count only counts too_short + invalid_letters + not_in_dictionary
@@ -1121,7 +1219,10 @@ mod tests {
     #[test]
     fn test_duplicate_word_rejected_in_solo() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
 
         // Claim "CAT" first time - should succeed
         app.on_char('C');
@@ -1149,7 +1250,10 @@ mod tests {
     #[test]
     fn test_duplicate_word_case_insensitive_solo() {
         let mut app = App::new();
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
 
         // Claim "CAT"
         app.on_char('C');
@@ -1172,7 +1276,10 @@ mod tests {
         let mut app = App::new();
 
         // Round 1
-        app.start_round(vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['C', 'A', 'T', 'D', 'O', 'G', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
         app.on_char('C');
         app.on_char('A');
         app.on_char('T');
@@ -1180,7 +1287,10 @@ mod tests {
         assert_eq!(app.score, 3);
 
         // Round 2 - score resets
-        app.start_round(vec!['D', 'O', 'G', 'C', 'A', 'T', 'E', 'R', 'S', 'T', 'A', 'N'], 60);
+        app.start_round(
+            vec!['D', 'O', 'G', 'C', 'A', 'T', 'E', 'R', 'S', 'T', 'A', 'N'],
+            60,
+        );
         assert_eq!(app.score, 0);
         assert!(app.claimed_words().is_empty());
     }
