@@ -2,7 +2,7 @@
 //! Application state management
 
 use crate::game::validation::{validate_word, ValidationResult};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 
 /// Default round duration in seconds
 pub const DEFAULT_ROUND_DURATION: u32 = 60;
@@ -100,6 +100,8 @@ pub struct App {
     pub round_ended: bool,
     /// Words claimed this round (by the local player)
     claimed_words: Vec<ClaimedWord>,
+    /// All accepted words seen this round (for idempotent multiplayer event handling)
+    accepted_words: HashSet<String>,
     /// Missed submissions this round
     missed_words: Vec<MissedWord>,
     /// Multiplayer scoreboard (all players)
@@ -123,6 +125,7 @@ impl Default for App {
             time_remaining: DEFAULT_ROUND_DURATION,
             round_ended: false,
             claimed_words: Vec::new(),
+            accepted_words: HashSet::new(),
             missed_words: Vec::new(),
             scoreboard: Vec::new(),
             claim_feed: VecDeque::new(),
@@ -191,6 +194,7 @@ impl App {
                 let points = word.len() as u32;
                 self.score += points;
                 self.feedback = format!("OK +{} ({})", points, word_upper);
+                self.accepted_words.insert(word_upper.clone());
                 self.claimed_words.push(ClaimedWord {
                     word: word_upper,
                     points,
@@ -262,6 +266,7 @@ impl App {
         self.feedback.clear();
         self.round_ended = false;
         self.claimed_words.clear();
+        self.accepted_words.clear();
         self.missed_words.clear();
         self.claim_feed.clear();
         // Reset scoreboard scores but keep players
@@ -298,10 +303,17 @@ impl App {
 
     /// Handle a claim accepted from the host (multiplayer)
     pub fn on_claim_accepted(&mut self, word: String, player_name: String, points: u32) {
+        let word_upper = word.to_uppercase();
+
+        // Network delivery may duplicate messages. Ignore repeated accepted claims for a word.
+        if !self.accepted_words.insert(word_upper.clone()) {
+            return;
+        }
+
         // Add to claim feed
         self.claim_feed.push_back(ClaimFeedEntry {
             player_name: player_name.clone(),
-            word: word.clone(),
+            word: word_upper.clone(),
             points,
         });
         // Trim feed if too long (O(1) with VecDeque)
@@ -312,9 +324,9 @@ impl App {
         // If it's our claim, update our state
         if self.player_name.as_ref() == Some(&player_name) {
             self.score += points;
-            self.feedback = format!("OK +{} ({})", points, word);
+            self.feedback = format!("OK +{} ({})", points, word_upper.clone());
             self.claimed_words.push(ClaimedWord {
-                word,
+                word: word_upper,
                 points,
             });
         }
@@ -816,6 +828,58 @@ mod tests {
 
         assert_eq!(app.score, 3);
         assert_eq!(app.claimed_words().len(), 1);
+    }
+
+    #[test]
+    fn test_duplicate_claim_accepted_ignored_for_local_player() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("cab".into(), "Alice".into(), 3);
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+
+        assert_eq!(app.score, 3);
+        assert_eq!(app.claimed_words().len(), 1);
+        assert_eq!(app.claim_feed.len(), 1);
+        assert_eq!(app.scoreboard[0].name, "Alice");
+        assert_eq!(app.scoreboard[0].score, 3);
+    }
+
+    #[test]
+    fn test_duplicate_claim_accepted_ignored_for_other_player() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("cab".into(), "Bob".into(), 3);
+        app.on_claim_accepted("CAB".into(), "Bob".into(), 3);
+
+        assert_eq!(app.score, 0);
+        assert_eq!(app.claimed_words().len(), 0);
+        assert_eq!(app.claim_feed.len(), 1);
+        assert_eq!(app.scoreboard[0].name, "Bob");
+        assert_eq!(app.scoreboard[0].score, 3);
+    }
+
+    #[test]
+    fn test_duplicate_word_can_be_claimed_again_next_round() {
+        let mut app = App::new();
+        app.set_player_name("Alice".into());
+        app.set_scoreboard(vec!["Alice".into(), "Bob".into()]);
+        app.start_round(vec!['A', 'B', 'C'], 60);
+
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+        assert_eq!(app.score, 3);
+
+        app.start_round(vec!['A', 'B', 'C'], 60);
+        app.on_claim_accepted("CAB".into(), "Alice".into(), 3);
+
+        assert_eq!(app.score, 3);
+        assert_eq!(app.claimed_words().len(), 1);
+        assert_eq!(app.claim_feed.len(), 1);
     }
 
     #[test]
