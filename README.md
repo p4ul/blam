@@ -21,10 +21,17 @@ Requires Rust 1.88 or later (1.93+ recommended). Use [rustup](https://rustup.rs/
 make release
 ./target/release/blam
 
-# Or using cargo directly (requires rustup in PATH)
-cargo build --release
+# Or using the toolchain wrapper directly
+./scripts/cargo.sh build --release
 ./target/release/blam
+
+# Run tests on the pinned toolchain
+make test
 ```
+
+If plain `cargo test` reports errors about `edition2024` with Cargo 1.75, your
+system Cargo is taking precedence in `PATH`. Use `make test` or
+`./scripts/cargo.sh test` instead.
 
 ## How to Play
 
