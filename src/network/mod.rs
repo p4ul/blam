@@ -113,11 +113,12 @@ impl ServiceDiscovery {
             SERVICE_TYPE,
             instance_name,
             &hostname,
-            (),  // Let the system determine our IP
+            (),
             port,
             &properties[..],
         )
-        .map_err(|e| format!("Failed to create service info: {}", e))?;
+        .map_err(|e| format!("Failed to create service info: {}", e))?
+        .enable_addr_auto();
 
         self.daemon
             .register(service_info)
@@ -181,13 +182,26 @@ impl ServiceDiscovery {
                             .unwrap_or(PROTOCOL_VERSION)
                             .to_string();
 
+                        // Collect addresses, preferring IPv4 over IPv6
+                        // IPv6 link-local addresses (fe80::) require scope_id
+                        // for TCP connections, which IpAddr doesn't carry
+                        let mut addresses: Vec<std::net::IpAddr> = info
+                            .get_addresses()
+                            .iter()
+                            .map(|s| s.to_ip_addr())
+                            .collect();
+                        addresses.sort_by_key(|addr| match addr {
+                            std::net::IpAddr::V4(_) => 0,
+                            std::net::IpAddr::V6(_) => 1,
+                        });
+
                         let peer_info = PeerInfo {
                             actor_id,
                             handle,
                             lobby_name,
                             version,
                             hostname: info.get_hostname().to_string(),
-                            addresses: info.get_addresses().iter().map(|s| s.to_ip_addr()).collect(),
+                            addresses,
                             port: info.get_port(),
                         };
 
@@ -440,5 +454,149 @@ mod tests {
     fn test_protocol_version_is_set() {
         assert!(!PROTOCOL_VERSION.is_empty());
         assert_eq!(PROTOCOL_VERSION, "1");
+    }
+
+    #[test]
+    fn test_mdns_advertise_and_browse_same_machine() {
+        use rand::Rng;
+
+        // Host advertises a service
+        let host_actor_id = format!("blam-test-{:08x}", rand::rng().random::<u32>());
+        let mut host_discovery = ServiceDiscovery::new(host_actor_id.clone()).unwrap();
+        host_discovery
+            .advertise("TestHost", Some("TEST-LOBBY"), 55999)
+            .unwrap();
+
+        // Browser discovers services
+        let browser_actor_id = format!("blam-test-{:08x}", rand::rng().random::<u32>());
+        let browser_discovery = ServiceDiscovery::new(browser_actor_id).unwrap();
+        let rx = browser_discovery.browse().unwrap();
+
+        // Wait for discovery
+        let mut found = false;
+        let mut events_seen = Vec::new();
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
+
+        while start.elapsed() < timeout {
+            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(DiscoveryEvent::PeerDiscovered(peer)) => {
+                    events_seen.push(format!(
+                        "PeerDiscovered: actor_id={}, handle={}, addresses={:?}, port={}",
+                        peer.actor_id, peer.handle, peer.addresses, peer.port
+                    ));
+                    if peer.actor_id == host_actor_id {
+                        assert_eq!(peer.handle, "TestHost");
+                        assert_eq!(peer.lobby_name.as_deref(), Some("TEST-LOBBY"));
+                        assert_eq!(peer.port, 55999);
+                        assert!(
+                            !peer.addresses.is_empty(),
+                            "Discovered peer should have at least one address, got: {:?}",
+                            peer.addresses
+                        );
+                        found = true;
+                        break;
+                    }
+                }
+                Ok(DiscoveryEvent::PeerLost(id)) => {
+                    events_seen.push(format!("PeerLost: {}", id));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    events_seen.push("Channel disconnected".to_string());
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            found,
+            "Browser should discover the host via mDNS within 10s. Events seen: {:?}",
+            events_seen
+        );
+
+        // Cleanup
+        host_discovery.stop_advertising().unwrap();
+        browser_discovery.stop_browsing().unwrap();
+        host_discovery.shutdown().unwrap();
+        browser_discovery.shutdown().unwrap();
+    }
+
+    #[test]
+    fn test_mdns_discovered_peer_has_connectable_address() {
+        use rand::Rng;
+        use std::net::TcpListener;
+
+        // Start a real TCP listener
+        let listener = TcpListener::bind("0.0.0.0:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        // Host advertises with the real port
+        let host_actor_id = format!("blam-test-{:08x}", rand::rng().random::<u32>());
+        let mut host_discovery = ServiceDiscovery::new(host_actor_id.clone()).unwrap();
+        host_discovery
+            .advertise("TestHost", Some("CONNECT-LOBBY"), port)
+            .unwrap();
+
+        // Browser discovers services
+        let browser_actor_id = format!("blam-test-{:08x}", rand::rng().random::<u32>());
+        let browser_discovery = ServiceDiscovery::new(browser_actor_id).unwrap();
+        let rx = browser_discovery.browse().unwrap();
+
+        // Wait for discovery
+        let mut found_peer: Option<PeerInfo> = None;
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(10);
+
+        while start.elapsed() < timeout {
+            match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+                Ok(DiscoveryEvent::PeerDiscovered(peer)) => {
+                    if peer.actor_id == host_actor_id {
+                        found_peer = Some(peer);
+                        break;
+                    }
+                }
+                _ => continue,
+            }
+        }
+
+        let peer = found_peer.expect("Should discover host via mDNS");
+        assert!(!peer.addresses.is_empty(), "Peer must have at least one address");
+
+        // IPv4 addresses should be sorted first
+        let first_addr = peer.addresses.first().unwrap();
+        assert!(
+            first_addr.is_ipv4(),
+            "First address should be IPv4, got: {:?}. All addresses: {:?}",
+            first_addr,
+            peer.addresses
+        );
+
+        // Try connecting to addresses in order (like JoinedLobby::join does)
+        let mut connected = false;
+        for addr in &peer.addresses {
+            let socket_addr = std::net::SocketAddr::new(*addr, peer.port);
+            if std::net::TcpStream::connect_timeout(
+                &socket_addr,
+                std::time::Duration::from_secs(2),
+            )
+            .is_ok()
+            {
+                connected = true;
+                break;
+            }
+        }
+        assert!(
+            connected,
+            "Should be able to connect to at least one discovered address. Addresses: {:?}",
+            peer.addresses
+        );
+
+        // Cleanup
+        drop(listener);
+        host_discovery.stop_advertising().unwrap();
+        browser_discovery.stop_browsing().unwrap();
+        host_discovery.shutdown().unwrap();
+        browser_discovery.shutdown().unwrap();
     }
 }

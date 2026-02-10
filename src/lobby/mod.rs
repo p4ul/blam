@@ -573,17 +573,27 @@ pub struct JoinedLobby {
 impl JoinedLobby {
     /// Join a lobby by connecting to a peer
     pub fn join(peer: &PeerInfo, player_name: String) -> Result<Self, String> {
-        // Get the first available address
-        let addr = peer
-            .addresses
-            .first()
-            .ok_or("No address available for peer")?;
+        if peer.addresses.is_empty() {
+            return Err("No address available for peer".to_string());
+        }
 
-        let socket_addr = std::net::SocketAddr::new(*addr, peer.port);
+        // Try addresses in order (IPv4 sorted first by browse handler)
+        let mut last_err = String::from("No addresses to try");
+        let mut connected_client = None;
+        for addr in &peer.addresses {
+            let socket_addr = std::net::SocketAddr::new(*addr, peer.port);
+            match Client::connect_addr(socket_addr, player_name.clone()) {
+                Ok(client) => {
+                    connected_client = Some(client);
+                    break;
+                }
+                Err(e) => {
+                    last_err = format!("Failed to connect to {}: {}", socket_addr, e);
+                }
+            }
+        }
 
-        // Connect to the host
-        let mut client = Client::connect_addr(socket_addr, player_name.clone())
-            .map_err(|e| format!("Failed to connect: {}", e))?;
+        let mut client = connected_client.ok_or(last_err)?;
 
         // Send join message
         client.join().map_err(|e| format!("Failed to join: {}", e))?;
@@ -1869,5 +1879,124 @@ mod e2e_tests {
         // Should still be at max
         assert!(lobby.player_count() <= MAX_PLAYERS,
             "Lobby should not exceed MAX_PLAYERS");
+    }
+
+    // =========================================================================
+    // mDNS discovery: same-machine lobby discovery and join
+    // =========================================================================
+
+    #[test]
+    fn e2e_mdns_discover_and_join_lobby() {
+        // Host creates a lobby (advertises via mDNS)
+        let mut hosted = HostedLobby::new("HostPlayer".into()).unwrap();
+        let host_port = hosted.port();
+
+        // Browser discovers the lobby via mDNS
+        let mut browser = LobbyBrowser::new().unwrap();
+
+        let mut found_peer = None;
+        let start = std::time::Instant::now();
+        let timeout = Duration::from_secs(10);
+
+        while start.elapsed() < timeout {
+            let lobbies = browser.poll();
+            for lobby in &lobbies {
+                if lobby.port == host_port {
+                    found_peer = Some(lobby.clone());
+                    break;
+                }
+            }
+            if found_peer.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+
+        let peer = found_peer.expect("Should discover hosted lobby via mDNS");
+        assert_eq!(peer.handle, "HostPlayer");
+        assert!(peer.lobby_name.is_some());
+        assert!(!peer.addresses.is_empty(), "Discovered peer must have addresses");
+
+        // Join the discovered lobby
+        let mut joined = JoinedLobby::join(&peer, "JoiningPlayer".into())
+            .expect("Should be able to join discovered lobby");
+
+        // Verify the connection works - host should see the join
+        thread::sleep(Duration::from_millis(300));
+        let events = hosted.poll();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                LobbyEvent::PlayerJoined(name) if name == "JoiningPlayer"
+            )),
+            "Host should see JoiningPlayer join"
+        );
+        assert_eq!(hosted.player_count(), 2);
+
+        // Verify gameplay works over the discovered connection
+        hosted.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(200));
+        let messages = joined.poll();
+        assert!(
+            messages.iter().any(|e| matches!(e, LobbyEvent::RoundStart { .. })),
+            "Joined client should receive RoundStart over mDNS-discovered connection"
+        );
+
+        // Clean up
+        browser.stop().ok();
+    }
+
+    #[test]
+    fn e2e_mdns_discover_play_full_round() {
+        // Full game flow: discover -> join -> play -> score
+        let mut hosted = HostedLobby::new("Host".into()).unwrap();
+        let host_port = hosted.port();
+
+        let mut browser = LobbyBrowser::new().unwrap();
+
+        // Discover lobby
+        let mut found_peer = None;
+        let start = std::time::Instant::now();
+        while start.elapsed() < Duration::from_secs(10) {
+            for lobby in browser.poll() {
+                if lobby.port == host_port {
+                    found_peer = Some(lobby);
+                    break;
+                }
+            }
+            if found_peer.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+        browser.stop().ok();
+
+        let peer = found_peer.expect("Should discover lobby");
+        let mut joined = JoinedLobby::join(&peer, "Client".into()).unwrap();
+
+        thread::sleep(Duration::from_millis(300));
+        hosted.poll(); // Process join
+
+        // Start round
+        hosted.start_round(test_letters_vec(), 60);
+        thread::sleep(Duration::from_millis(200));
+        joined.poll(); // Consume RoundStart
+
+        // Host claims a word
+        hosted.host_claim("cat");
+
+        // Client claims a word
+        joined.send_claim("dog").unwrap();
+        thread::sleep(Duration::from_millis(300));
+        hosted.poll(); // Process client claim
+
+        // End round and verify scores
+        hosted.end_round();
+        let scores = hosted.scores();
+        let host_score = scores.iter().find(|(n, _)| n == "Host").map(|(_, s)| *s).unwrap_or(0);
+        let client_score = scores.iter().find(|(n, _)| n == "Client").map(|(_, s)| *s).unwrap_or(0);
+
+        assert_eq!(host_score, 3, "Host: CAT = 3pts");
+        assert_eq!(client_score, 3, "Client: DOG = 3pts");
     }
 }
